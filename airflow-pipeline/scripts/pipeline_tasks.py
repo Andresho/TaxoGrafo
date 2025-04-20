@@ -62,10 +62,16 @@ GENERATED_UCS_RAW = "generated_ucs_raw"
 UC_EVALUATIONS_RAW = "uc_evaluations_aggregated_raw"
 REL_TYPE_REQUIRES = "REQUIRES"
 REL_TYPE_EXPANDS = "EXPANDS"
+# DEFAULT_OUTPUT_COLUMNS: para DataFrames vazios de batch
 DEFAULT_OUTPUT_COLUMNS = {
     GENERATED_UCS_RAW: ["uc_id", "origin_id", "bloom_level", "uc_text"],
     UC_EVALUATIONS_RAW: ["uc_id", "difficulty_score", "justification"]
 }
+
+# Nomes de arquivos intermediários e finais
+REL_INTERMEDIATE = "knowledge_relationships_intermediate"
+FINAL_UC_FILE = "final_knowledge_units"
+FINAL_REL_FILE = "final_knowledge_relationships"
 
 # --- Funções Auxiliares de Persistência ---
 def save_dataframe(df: pd.DataFrame, stage_dir: Path, filename: str):
@@ -492,8 +498,11 @@ def task_define_relationships(**context):
     # ... (lógica como antes, lendo de stage2_output_ucs_dir, salvando em stage3_dir) ...
     logging.info("--- TASK: define_relationships ---")
     try:
-        generated_ucs_df = load_dataframe(stage2_output_ucs_dir, "generated_ucs_raw")
-        if generated_ucs_df is None or generated_ucs_df.empty: logging.warning("Nenhuma UC para definir relações."); save_dataframe(pd.DataFrame(columns=["source", "target", "type"]), stage3_dir, "knowledge_relationships_intermediate"); return
+        generated_ucs_df = load_dataframe(stage2_output_ucs_dir, GENERATED_UCS_RAW)
+        if generated_ucs_df is None or generated_ucs_df.empty:
+            logging.warning("Nenhuma UC para definir relações.")
+            save_dataframe(pd.DataFrame(columns=["source", "target", "type"]), stage3_dir, REL_INTERMEDIATE)
+            return
         generated_ucs = generated_ucs_df.to_dict('records')
         all_relationships: List[Dict[str, Any]] = []
         ucs_by_origin: Dict[str, List[Dict]] = defaultdict(list)
@@ -506,14 +515,18 @@ def task_define_relationships(**context):
                  s_uc, t_uc = sorted_ucs[i], sorted_ucs[i+1]; s_idx, t_idx = BLOOM_ORDER_MAP.get(s_uc.get("bloom_level")), BLOOM_ORDER_MAP.get(t_uc.get("bloom_level"))
                  if s_idx is not None and t_idx is not None and t_idx == s_idx + 1: new_requires_rels.append({"source":s_uc.get("uc_id"),"target":t_uc.get("uc_id"),"type":"REQUIRES","origin_id":origin_id})
         all_relationships = _add_relationships_avoiding_duplicates(all_relationships, new_requires_rels)
-        relationships_df = load_dataframe(BASE_INPUT_DIR, "relationships"); entities_df = load_dataframe(BASE_INPUT_DIR, "entities")
+        relationships_df = load_dataframe(BASE_INPUT_DIR, "relationships")
+        entities_df = load_dataframe(BASE_INPUT_DIR, "entities")
         if relationships_df is not None and entities_df is not None:
             entity_name_to_id, ucs_by_origin_level = _prepare_expands_lookups(entities_df, generated_ucs)
             if entity_name_to_id: new_expands_rels = _create_expands_links(relationships_df, entity_name_to_id, ucs_by_origin_level); all_relationships = _add_relationships_avoiding_duplicates(all_relationships, new_expands_rels)
             else: logging.warning("Pulando EXPANDS (mapa nome->ID falhou).")
         else: logging.warning("Pulando EXPANDS (inputs não carregados).")
-        if all_relationships: save_dataframe(pd.DataFrame(all_relationships), stage3_dir, "knowledge_relationships_intermediate")
-        else: logging.warning("Nenhuma relação definida."); save_dataframe(pd.DataFrame(columns=["source", "target", "type"]), stage3_dir, "knowledge_relationships_intermediate")
+        if all_relationships:
+            save_dataframe(pd.DataFrame(all_relationships), stage3_dir, REL_INTERMEDIATE)
+        else:
+            logging.warning("Nenhuma relação definida.")
+            save_dataframe(pd.DataFrame(columns=["source", "target", "type"]), stage3_dir, REL_INTERMEDIATE)
     except Exception as e: logging.exception("Falha na task_define_relationships"); raise
 
 def task_submit_difficulty_batch(**context):
@@ -534,15 +547,33 @@ def task_submit_difficulty_batch(**context):
         for uc in generated_ucs:
             if uc.get("bloom_level") in BLOOM_ORDER_MAP: ucs_by_bloom[uc.get("bloom_level")].append(uc)
         with open(batch_input_path, 'w', encoding='utf-8') as f_out:
-             for bloom_level, ucs_in_level in ucs_by_bloom.items():
-                 indices = list(range(len(ucs_in_level))); random.shuffle(indices)
-                 for i in range(0, len(indices), DIFFICULTY_BATCH_SIZE):
-                    batch_indices = indices[i:i + DIFFICULTY_BATCH_SIZE]; batch_ucs_data = [ucs_in_level[idx] for idx in batch_indices];
-                    if not batch_ucs_data: continue
-                    formatted_prompt = _format_difficulty_prompt(batch_ucs_data, prompt_template); custom_batch_id = f"diff_eval_{bloom_level}_{i//DIFFICULTY_BATCH_SIZE}"; uc_ids_in_batch = [uc['uc_id'] for uc in batch_ucs_data]
-                    request_body = {"model": LLM_MODEL, "messages": [{"role":"system", "content":"..."}, {"role":"user", "content":formatted_prompt}], "temperature": LLM_TEMPERATURE_DIFFICULTY, "response_format": {"type": "json_object"}}
-                    request_line = {"custom_id": custom_batch_id, "method": "POST", "url": "/v1/chat/completions", "body": request_body, "metadata": {"uc_ids": uc_ids_in_batch} }
-                    f_out.write(json.dumps(request_line) + '\n'); request_count += 1
+            for bloom_level, ucs_in_level in ucs_by_bloom.items():
+                indices = list(range(len(ucs_in_level)))
+                random.shuffle(indices)
+                for i in range(0, len(indices), DIFFICULTY_BATCH_SIZE):
+                    batch_indices = indices[i:i + DIFFICULTY_BATCH_SIZE]
+                    batch_ucs_data = [ucs_in_level[idx] for idx in batch_indices]
+                    if not batch_ucs_data:
+                        continue
+                    formatted_prompt = _format_difficulty_prompt(batch_ucs_data, prompt_template)
+                    custom_batch_id = f"diff_eval_{bloom_level}_{i // DIFFICULTY_BATCH_SIZE}"
+                    request_body = {
+                        "model": LLM_MODEL,
+                        "messages": [
+                            {"role": "system", "content": "..."},
+                            {"role": "user", "content": formatted_prompt}
+                        ],
+                        "temperature": LLM_TEMPERATURE_DIFFICULTY,
+                        "response_format": {"type": "json_object"}
+                    }
+                    request_line = {
+                        "custom_id": custom_batch_id,
+                        "method": "POST",
+                        "url": "/v1/chat/completions",
+                        "body": request_body
+                    }
+                    f_out.write(json.dumps(request_line) + '\n')
+                    request_count += 1
         logging.info(f"Arquivo batch diff {batch_input_path} criado ({request_count} requests).")
         logging.info(f"Fazendo upload de {batch_input_path}...")
         with open(batch_input_path, "rb") as f: batch_input_file = OPENAI_CLIENT.files.create(file=f, purpose="batch"); logging.info(f"Upload concluído. File ID: {batch_input_file.id}")
@@ -557,9 +588,9 @@ def task_finalize_outputs(**context):
     # Adapta _calculate_final_difficulty_from_raw se necessário
     logging.info("--- TASK: finalize_outputs ---")
     try:
-        ucs_raw_df = load_dataframe(stage2_output_ucs_dir, "generated_ucs_raw")
-        rels_intermed_df = load_dataframe(stage3_dir, "knowledge_relationships_intermediate")
-        evals_raw_df = load_dataframe(stage4_output_eval_dir, "uc_evaluations_aggregated_raw") # Lê avaliações brutas
+        ucs_raw_df = load_dataframe(stage2_output_ucs_dir, GENERATED_UCS_RAW)
+        rels_intermed_df = load_dataframe(stage3_dir, REL_INTERMEDIATE)
+        evals_raw_df = load_dataframe(stage4_output_eval_dir, UC_EVALUATIONS_RAW)  # Lê avaliações brutas
 
         if ucs_raw_df is None: raise ValueError("UCs brutas não encontradas.")
 
@@ -591,11 +622,13 @@ def task_finalize_outputs(**context):
                       except: final_ucs_df[col] = final_ucs_df[col].fillna(0).astype(int)
                  else: final_ucs_df[col] = 0; final_ucs_df[col] = final_ucs_df[col].astype(int)
             final_ucs_df["difficulty_justification"] = final_ucs_df["difficulty_justification"].fillna("Não avaliado")
-            save_dataframe(final_ucs_df, stage5_dir, "final_knowledge_units")
+            save_dataframe(final_ucs_df, stage5_dir, FINAL_UC_FILE)
         else: raise ValueError("Lista final de UCs vazia.")
 
-        if rels_intermed_df is not None: save_dataframe(rels_intermed_df, stage5_dir, "final_knowledge_relationships")
-        else: logging.warning("Relações intermediárias não encontradas.")
+        if rels_intermed_df is not None:
+            save_dataframe(rels_intermed_df, stage5_dir, FINAL_REL_FILE)
+        else:
+            logging.warning("Relações intermediárias não encontradas.")
 
     except Exception as e:
         logging.exception("Falha na task_finalize_outputs")
