@@ -600,14 +600,10 @@ def task_finalize_outputs(**context):
         if evals_raw_df is not None and not evals_raw_df.empty:
             logging.info("Recalculando scores finais de dificuldade...")
             raw_evals_list = evals_raw_df.to_dict('records')
-            # Recalcula scores a partir do raw_evals_list
-            temp_uc_scores: Dict[str, List[int]] = defaultdict(list); temp_uc_justifications: Dict[str, List[str]] = defaultdict(list); temp_uc_evaluation_count: Counter = Counter()
-            for eval_item in raw_evals_list:
-                 uc_id = eval_item.get('uc_id'); score = eval_item.get('difficulty_score'); justification = eval_item.get('justification') # Nomes das colunas no raw
-                 if uc_id and score is not None: temp_uc_scores[uc_id].append(int(score));
-                 if justification: temp_uc_justifications[uc_id].append(justification); temp_uc_evaluation_count[uc_id] += 1
-
-            final_ucs_list, _, _ = _calculate_final_difficulty_from_raw(generated_ucs_list, temp_uc_scores, temp_uc_justifications, temp_uc_evaluation_count)
+            # Usa avaliações brutas para calcular scores finais
+            final_ucs_list, evaluated_count, min_evals_met_count = _calculate_final_difficulty_from_raw(
+                generated_ucs_list, raw_evals_list
+            )
         else:
             logging.warning("Avaliações brutas não encontradas. UCs finais sem scores.")
             final_ucs_list = generated_ucs_list # Usa a lista original
