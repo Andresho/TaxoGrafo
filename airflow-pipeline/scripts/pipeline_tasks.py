@@ -9,7 +9,10 @@ import json
 import uuid
 from collections import defaultdict, Counter
 import random
-from openai import OpenAI # Importa cliente OpenAI padrão para Batch API
+try:
+    from openai import OpenAI  # Importa cliente OpenAI padrão para Batch API
+except ImportError:
+    OpenAI = None
 from dotenv import load_dotenv
 import math
 import time
