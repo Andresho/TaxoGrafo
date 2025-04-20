@@ -33,6 +33,8 @@ x-airflow-common: &airflow-common
     - ./plugins:/opt/airflow/plugins
     - ./scripts:/opt/airflow/scripts
     - ./data:/opt/airflow/data # Para inputs e outputs do pipeline
+    # Monta os outputs do GraphRAG diretamente como inputs da pipeline
+    - ./graphrag_outputs:/opt/airflow/data/graphrag_outputs:ro
   depends_on:
     postgres:
       condition: service_healthy

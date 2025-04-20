@@ -425,13 +425,13 @@ def process_batch_results(
     return all_ok
 
 
-def task_wait_and_process_batch_generic(batch_id_xcom_key: str, output_dir: Path, output_filename: str, **context):
+def task_wait_and_process_batch_generic(batch_id_key: str, output_dir: Path, output_filename: str, **context):
     """Tarefa Genérica: Espera e processa resultados de um batch job da OpenAI."""
     ti = context['ti'] # TaskInstance para XComs
-    batch_id = ti.xcom_pull(task_ids=f'submit_{batch_id_xcom_key}_batch', key='return_value')
+    batch_id = ti.xcom_pull(task_ids=f'submit_{batch_id_key}_batch', key='return_value')
 
     if not batch_id:
-        logging.warning(f"Nenhum batch_id encontrado para {batch_id_xcom_key} via XCom. Pulando.")
+        logging.warning(f"Nenhum batch_id encontrado para {batch_id_key} via XCom. Pulando.")
         # Garante arquivo vazio para downstream
         output_dir.mkdir(parents=True, exist_ok=True)
         # Define colunas básicas esperadas para cada tipo de output
@@ -442,7 +442,7 @@ def task_wait_and_process_batch_generic(batch_id_xcom_key: str, output_dir: Path
         save_dataframe(pd.DataFrame(columns=default_cols.get(output_filename, [])), output_dir, output_filename)
         return # Considera "sucesso" pois não havia nada a fazer
 
-    logging.info(f"--- TASK: wait_and_process_{batch_id_xcom_key}_results (Batch ID: {batch_id}) ---")
+    logging.info(f"--- TASK: wait_and_process_{batch_id_key}_results (Batch ID: {batch_id}) ---")
     if OPENAI_CLIENT is None: raise ValueError("Cliente OpenAI não inicializado")
 
     polling_interval_seconds = 60; max_polling_attempts = 120; attempts = 0

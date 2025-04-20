@@ -70,7 +70,7 @@ with DAG(
         task_id="wait_process_generation_results",
         python_callable=task_wait_and_process_batch,
         op_kwargs={
-            'batch_id_key': 'generation', # Chave para buscar o ID do batch submetido
+            'batch_id_key': 'generation',  # Key para buscar o ID do batch submetido via XCom
             'output_dir': stage2_output_ucs_dir,
             'output_filename': 'generated_ucs_raw'
         },
@@ -89,9 +89,9 @@ with DAG(
 
     wait_process_difficulty = PythonOperator(
         task_id="wait_process_difficulty_results",
-        python_callable=task_wait_and_process_batch, # Reutiliza a função de wait
-         op_kwargs={
-            'batch_id_key': 'difficulty', # Chave diferente
+        python_callable=task_wait_and_process_batch,  # Reutiliza a função de wait
+        op_kwargs={
+            'batch_id_key': 'difficulty',  # Key para buscar o ID do batch de dificuldade via XCom
             'output_dir': stage4_output_eval_dir,
             # Salva avaliações brutas aqui para cálculo final na próxima etapa
             'output_filename': 'uc_evaluations_aggregated_raw'
