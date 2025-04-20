@@ -1,0 +1,128 @@
+# docker-compose.yaml
+version: '3.8'
+
+x-airflow-common: &airflow-common
+  # Comente/Descomente a opção apropriada:
+  # Opção 1: Usar a imagem customizada construída pelo Dockerfile
+  image: minha-imagem-airflow-customizada:latest # Certifique-se que esta tag existe (docker build -t ...)
+  # Opção 2: Construir diretamente (se preferir)
+  # build:
+  #  context: .
+  #  dockerfile: Dockerfile
+  # Opção 3: Usar imagem oficial (instalará dependências no primeiro 'up', pode ser lento)
+  # image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:2.8.4-python3.9}
+
+  env_file:
+    - .env # Carrega variáveis de ambiente como OPENAI_API_KEY e AIRFLOW_UID
+  environment:
+    &airflow-common-env
+    # Configs Core Airflow
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor # Ou LocalExecutor para testes mais simples
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    # Configs de Banco de Dados (Usar seção [database] preferencialmente)
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    # Configs Celery (Se usar CeleryExecutor)
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
+    AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+    # Adicione outras configurações do Airflow aqui se necessário
+    # Ex: AIRFLOW__WEBSERVER__SECRET_KEY: "uma_chave_secreta_super_segura" # Gere uma chave aleatória
+  volumes:
+    # Monta diretórios locais para dentro do container
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./scripts:/opt/airflow/scripts
+    - ./data:/opt/airflow/data # Para inputs e outputs do pipeline
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy # Necessário apenas para CeleryExecutor
+  user: "${AIRFLOW_UID:-50000}" # Garante permissões corretas nos volumes montados
+
+services:
+  postgres:
+    image: postgres:13
+    container_name: airflow-postgres
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    ports:
+      - "5434:5432" # Mapeia para 5434 localmente
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - airflow-pg-data:/var/lib/postgresql/data
+
+  redis: # Necessário apenas para CeleryExecutor
+    image: redis:latest
+    container_name: airflow-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - airflow-redis-data:/data
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver # Comando padrão para iniciar o webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s # Aumenta intervalo para dar tempo de iniciar
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler # Comando padrão para iniciar o scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  airflow-worker: # Necessário apenas para CeleryExecutor
+    <<: *airflow-common
+    container_name: airflow-worker
+    command: celery worker # Comando padrão para iniciar um worker celery
+    # Ajuste a concorrência se necessário
+    # environment:
+    #   <<: *airflow-common-env # Herda env vars
+    #   CELERY_CONCURRENCY: 4
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type WorkerJob --hostname "$${HOSTNAME}"']
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    # REMOVIDO: entrypoint: /bin/bash # Usa entrypoint padrão da imagem!
+    # Comando para inicializar o DB e criar usuário (ou apenas garantir que existem)
+    # || true no final evita falha se já inicializado/usuário existe
+    command: >
+      bash -c
+      'airflow db init;
+       airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin || true'
+    # Não precisa de restart, é um job one-off
+    # depends_on já está no x-airflow-common
+
+volumes:
+  airflow-pg-data:
+  airflow-redis-data:

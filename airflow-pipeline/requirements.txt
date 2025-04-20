@@ -1,0 +1,4 @@
+pandas
+pyarrow # ou fastparquet
+python-dotenv
+openai>=1.0 # Certifique-se de ter a versão que suporta Batch API

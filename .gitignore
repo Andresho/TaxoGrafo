@@ -1,0 +1,32 @@
+# Ignore environment variables
+.env
+
+# IDE directories
+.idea/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Parquet data
+*.parquet
+
+# Generated pipeline outputs
+files/
+graphrag_outputs/
+pipeline_workdir/
+output/
+
+# Airflow-generated files
+airflow-pipeline/logs/
+airflow-pipeline/data/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# macOS files
+.DS_Store
+
+# Docker Compose override (local)
+docker-compose.override.yml
