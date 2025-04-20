@@ -57,6 +57,16 @@ try:
 except Exception as e:
     logging.error(f"Falha ao inicializar cliente OpenAI: {e}. Verifique API Key.")
 
+# Constantes para evitar magic strings e configuração centralizada
+GENERATED_UCS_RAW = "generated_ucs_raw"
+UC_EVALUATIONS_RAW = "uc_evaluations_aggregated_raw"
+REL_TYPE_REQUIRES = "REQUIRES"
+REL_TYPE_EXPANDS = "EXPANDS"
+DEFAULT_OUTPUT_COLUMNS = {
+    GENERATED_UCS_RAW: ["uc_id", "origin_id", "bloom_level", "uc_text"],
+    UC_EVALUATIONS_RAW: ["uc_id", "difficulty_score", "justification"]
+}
+
 # --- Funções Auxiliares de Persistência ---
 def save_dataframe(df: pd.DataFrame, stage_dir: Path, filename: str):
     """Salva um DataFrame em formato Parquet no diretório do estágio."""
@@ -216,10 +226,23 @@ def _add_relationships_avoiding_duplicates(
 ) -> List[Dict[str, Any]]:
     """Adiciona novas relações a uma lista existente, evitando duplicatas."""
     # ... (código inalterado da versão anterior) ...
-    if not new_rels: return existing_rels; updated_rels = list(existing_rels); existing_rel_tuples = {(r.get("source"), r.get("target"), r.get("type")) for r in updated_rels}; added_count = 0
+    # Se não há novas relações, retorna lista existente
+    if not new_rels:
+        return existing_rels
+
+    # Prepara estruturas para evitar duplicatas
+    updated_rels = list(existing_rels)
+    existing_rel_tuples = {(r.get("source"), r.get("target"), r.get("type")) for r in updated_rels}
+    added_count = 0
+
+    # Adiciona apenas relações novas
     for rel in new_rels:
-         rel_tuple = (rel.get("source"), rel.get("target"), rel.get("type"))
-         if rel_tuple not in existing_rel_tuples: updated_rels.append(rel); existing_rel_tuples.add(rel_tuple); added_count += 1
+        rel_tuple = (rel.get("source"), rel.get("target"), rel.get("type"))
+        if rel_tuple not in existing_rel_tuples:
+            updated_rels.append(rel)
+            existing_rel_tuples.add(rel_tuple)
+            added_count += 1
+
     logging.info(f"{added_count} novas relações adicionadas ({len(new_rels) - added_count} duplicatas evitadas).")
     return updated_rels
 
@@ -386,13 +409,13 @@ def process_batch_results(
                 try:
                     inner_data = json.loads(content_cleaned)
                     # Processamento específico da etapa
-                    if output_filename == "generated_ucs_raw":
+                    if output_filename == GENERATED_UCS_RAW:
                         units = inner_data.get("generated_units", [])
                         if isinstance(units, list) and len(units) == 6:
                             for unit in units:
                                 if isinstance(unit,dict) and "bloom_level" in unit and "uc_text" in unit: unit["uc_id"]=str(uuid.uuid4()); unit["origin_id"]=origin_id; processed_data.append(unit)
                         else: logging.warning(f"JSON interno {custom_id} != 6 UCs"); errors_in_batch += 1
-                    elif output_filename == "uc_evaluations_aggregated_raw":
+                    elif output_filename == UC_EVALUATIONS_RAW:
                          assessments = inner_data.get("difficulty_assessments", [])
                          if isinstance(assessments, list):
                               for assessment in assessments:
@@ -434,12 +457,9 @@ def task_wait_and_process_batch_generic(batch_id_key: str, output_dir: Path, out
         logging.warning(f"Nenhum batch_id encontrado para {batch_id_key} via XCom. Pulando.")
         # Garante arquivo vazio para downstream
         output_dir.mkdir(parents=True, exist_ok=True)
-        # Define colunas básicas esperadas para cada tipo de output
-        default_cols = {
-            "generated_ucs_raw": ["uc_id", "origin_id", "bloom_level", "uc_text"],
-            "uc_evaluations_aggregated_raw": ["uc_id", "difficulty_score", "justification"]
-        }
-        save_dataframe(pd.DataFrame(columns=default_cols.get(output_filename, [])), output_dir, output_filename)
+        # Gera DataFrame vazio com colunas definidas em DEFAULT_OUTPUT_COLUMNS
+        empty_cols = DEFAULT_OUTPUT_COLUMNS.get(output_filename, [])
+        save_dataframe(pd.DataFrame(columns=empty_cols), output_dir, output_filename)
         return # Considera "sucesso" pois não havia nada a fazer
 
     logging.info(f"--- TASK: wait_and_process_{batch_id_key}_results (Batch ID: {batch_id}) ---")
