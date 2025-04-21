@@ -29,7 +29,7 @@ def test_task_wait_and_process_batch_no_batch(monkeypatch, tmp_path):
     assert called['stage_dir'] == tmp_path
     assert called['filename'] == pt.GENERATED_UCS_RAW
 
-def test_task_wait_and_process_batch_success(monkeypatch, tmp_path):
+def test_task_wait_and_process_batch_success(monkeypatch, tmp_path, dummy_client):
     # Com batch_id e processamento bem-sucedido
     fake_ti = FakeTI('batch123')
     # Monkeypatch xcom_pull via fake_ti
@@ -40,6 +40,8 @@ def test_task_wait_and_process_batch_success(monkeypatch, tmp_path):
         called['args'] = (batch_id, output_file_id, error_file_id, stage_dir, filename)
         return True
     monkeypatch.setattr(pt, 'process_batch_results', fake_process)
+    # Define cliente OpenAI dummy para evitar ValueError
+    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
     # Chama a tarefa; não deve lançar
     result = pt.task_wait_and_process_batch_generic('uc_generation', tmp_path, pt.GENERATED_UCS_RAW, ti=fake_ti)
     # Deve ter chamado process_batch_results com valores corretos
