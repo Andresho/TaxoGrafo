@@ -222,16 +222,24 @@ def _create_expands_links(
                 if s_ucs and t_ucs:
                     for s_uc_id in s_ucs:
                         for t_uc_id in t_ucs:
-                            # Add a single undirected (bidirectional) EXPANDS relation once, canonically ordered
-                            u, v = sorted([s_uc_id, t_uc_id])
+                            # Directed EXPANDS relation (mesmo esquema que REQUIRES)
                             rel = {
-                                # Undirected edge: list both UC IDs
-                                "nodes": [u, v],
+                                "source": s_uc_id,
+                                "target": t_uc_id,
                                 "type": "EXPANDS",
                                 "weight": rel_weight,
                                 "graphrag_rel_desc": desc_clean,
                             }
                             new_expands_rels.append(rel)
+                            # Bidirectional EXPANDS: adiciona relação reversa
+                            rev_rel = {
+                                "source": t_uc_id,
+                                "target": s_uc_id,
+                                "type": "EXPANDS",
+                                "weight": rel_weight,
+                                "graphrag_rel_desc": desc_clean,
+                            }
+                            new_expands_rels.append(rev_rel)
     logging.info(f"Processadas {processed_graphrag_rels} relações GraphRAG com UCs.");
     if skipped_missing_entity > 0: logging.warning(f"{skipped_missing_entity} relações puladas (entidade não mapeada).");
     logging.info(f"Candidatas a {len(new_expands_rels)} novas relações EXPANDS.")
@@ -247,9 +255,12 @@ def _add_relationships_avoiding_duplicates(
     if not new_rels:
         return existing_rels
 
-    # Prepara estruturas para evitar duplicatas
+    # Prepara estruturas para evitar duplicatas (baseado em source, target, type)
     updated_rels = list(existing_rels)
-    existing_rel_tuples = {(r.get("source"), r.get("target"), r.get("type")) for r in updated_rels}
+    existing_rel_tuples = {
+        (r.get("source"), r.get("target"), r.get("type"))
+        for r in updated_rels
+    }
     added_count = 0
 
     # Adiciona apenas relações novas
@@ -260,7 +271,10 @@ def _add_relationships_avoiding_duplicates(
             existing_rel_tuples.add(rel_tuple)
             added_count += 1
 
-    logging.info(f"{added_count} novas relações adicionadas ({len(new_rels) - added_count} duplicatas evitadas).")
+    logging.info(
+        f"{added_count} novas relações adicionadas "
+        f"({len(new_rels) - added_count} duplicatas evitadas)."
+    )
     return updated_rels
 
 def _format_difficulty_prompt(
@@ -521,10 +535,21 @@ def task_define_relationships(**context):
             if uc.get("origin_id"): ucs_by_origin[uc.get("origin_id")].append(uc)
         new_requires_rels: List[Dict[str, Any]] = []
         for origin_id, ucs_in_group in ucs_by_origin.items():
-            sorted_ucs = sorted(ucs_in_group, key=lambda uc: BLOOM_ORDER_MAP.get(uc.get("bloom_level"), 99))
+            sorted_ucs = sorted(
+                ucs_in_group,
+                key=lambda uc: BLOOM_ORDER_MAP.get(uc.get("bloom_level"), 99)
+            )
             for i in range(len(sorted_ucs) - 1):
-                 s_uc, t_uc = sorted_ucs[i], sorted_ucs[i+1]; s_idx, t_idx = BLOOM_ORDER_MAP.get(s_uc.get("bloom_level")), BLOOM_ORDER_MAP.get(t_uc.get("bloom_level"))
-                 if s_idx is not None and t_idx is not None and t_idx == s_idx + 1: new_requires_rels.append({"source":s_uc.get("uc_id"),"target":t_uc.get("uc_id"),"type":"REQUIRES","origin_id":origin_id})
+                s_uc, t_uc = sorted_ucs[i], sorted_ucs[i + 1]
+                s_idx = BLOOM_ORDER_MAP.get(s_uc.get("bloom_level"))
+                t_idx = BLOOM_ORDER_MAP.get(t_uc.get("bloom_level"))
+                if s_idx is not None and t_idx is not None and t_idx == s_idx + 1:
+                    new_requires_rels.append({
+                        "source": s_uc.get("uc_id"),
+                        "target": t_uc.get("uc_id"),
+                        "type": "REQUIRES",
+                        "origin_id": origin_id
+                    })
         all_relationships = _add_relationships_avoiding_duplicates(all_relationships, new_requires_rels)
         relationships_df = load_dataframe(BASE_INPUT_DIR, "relationships")
         entities_df = load_dataframe(BASE_INPUT_DIR, "entities")

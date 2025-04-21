@@ -54,20 +54,21 @@ def test_create_expands_links_basic_weight_and_desc():
         "e2": {"Lembrar": ["ucB1"], "Entender": ["ucB2"]},
     }
     rels = _create_expands_links(df, mapping, ucs)
-    # Expect one relation per level => total 2
-    assert len(rels) == 2
+    # Bidirectional relations per level => total 4
+    assert len(rels) == 4
     # Build set of tuples for easier assertion (nodes tuple, weight, desc)
-    rel_set = {(tuple(r["nodes"]), r["weight"], r["graphrag_rel_desc"]) for r in rels}
-    # Expected relations: node pairs per level
+    # Cada relação tem source, target, weight e descr
+    rel_set = {(r["source"], r["target"], r["weight"], r["graphrag_rel_desc"]) for r in rels}
     expected = {
-        (("ucA1", "ucB1"), 2.5, "relation desc"),
-        (("ucA2", "ucB2"), 2.5, "relation desc"),
+        ("ucA1", "ucB1", 2.5, "relation desc"),
+        ("ucB1", "ucA1", 2.5, "relation desc"),
+        ("ucA2", "ucB2", 2.5, "relation desc"),
+        ("ucB2", "ucA2", 2.5, "relation desc"),
     }
     assert rel_set == expected
-    # Check that 'nodes' array lists both UC IDs
+    # Verifica chaves source e target
     for r in rels:
-        assert "nodes" in r
-        assert isinstance(r["nodes"], list) and len(r["nodes"]) == 2
+        assert "source" in r and "target" in r
 
 def test_create_expands_links_default_weight_and_no_desc():
     # No weight/description columns -> default weight 1.0 and desc None
@@ -75,12 +76,11 @@ def test_create_expands_links_default_weight_and_no_desc():
     mapping = {"A": "e1", "B": "e2"}
     ucs = {"e1": {"Lembrar": ["u1"]}, "e2": {"Lembrar": ["u2"]}}
     rels = _create_expands_links(df, mapping, ucs)
-    # Only one level 'Lembrar' => one undirected relation
-    assert len(rels) == 1
+    # Bidirectional relation for single level 'Lembrar' => total 2 relations
+    assert len(rels) == 2
     for r in rels:
         assert r["weight"] == 1.0
         assert r["graphrag_rel_desc"] is None
         assert r["type"] == "EXPANDS"
-        # Check nodes array for undirected edge
-        assert "nodes" in r
-        assert isinstance(r["nodes"], list) and len(r["nodes"]) == 2
+        # Relação dirigida: source e target
+        assert "source" in r and "target" in r
