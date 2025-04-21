@@ -1,11 +1,7 @@
-import sys
-import pathlib
 import json
 import pandas as pd
+import pathlib
 import pytest
-
-# Ajusta caminho para importar o módulo pipeline_tasks
-sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import scripts.pipeline_tasks as pt
 from scripts.pipeline_tasks import process_batch_results, GENERATED_UCS_RAW, UC_EVALUATIONS_RAW

@@ -1,9 +1,3 @@
-import sys
-import pathlib
-
-# Ensure project root is in sys.path for importing 'scripts'
-sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
-
 import pandas as pd
 import numpy as np
 import pytest

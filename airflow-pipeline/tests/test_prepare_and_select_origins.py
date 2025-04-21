@@ -1,10 +1,5 @@
-import sys
-import pathlib
 import pandas as pd
 import pytest
-
-# Ajusta caminho para importar scripts
-sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from scripts.pipeline_tasks import prepare_uc_origins, _select_origins_for_testing, _get_sort_key
 

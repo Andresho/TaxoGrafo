@@ -1,10 +1,4 @@
-import sys
-import pathlib
 import pandas as pd
-
-# Ajusta caminho para importações
-sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
-
 import pytest
 
 from scripts.pipeline_tasks import save_dataframe, load_dataframe

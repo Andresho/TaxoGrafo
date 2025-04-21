@@ -1,11 +1,6 @@
-import sys
-import pathlib
 import json
 import pandas as pd
 import pytest
-
-# Ajusta caminho para importar módulo pipeline_tasks
-sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import scripts.pipeline_tasks as pt
 
