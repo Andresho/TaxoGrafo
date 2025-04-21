@@ -23,8 +23,10 @@ class DummyFiles:
     def create(self, file, purpose):
         self.last_file = file
         self.last_purpose = purpose
-        # Return object with id attribute
-        return type('F', (), {'id': 'file123'})
+        # Return object with id attribute and store for retrieval
+        file_obj = type('F', (), {'id': 'file123'})
+        self.last_file_obj = file_obj
+        return file_obj
     def content(self, file_id):
         if file_id not in self.content_map:
             raise KeyError(f"Unknown file_id {file_id}")

@@ -33,61 +33,7 @@ def setup_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(pt, 'PROMPT_UC_DIFFICULTY_FILE', diff_prompt)
     return input_dir, work_dir
 
-class DummyGenFiles:
-    def __init__(self):
-        self.id = 'gen_file'
-    def create(self, file, purpose):
-        return type('F', (), {'id': self.id})
-    def content(self, file_id):
-        # Não usado em geração
-        raise RuntimeError('Unexpected content call')
-
-class DummyGenBatches:
-    def __init__(self): pass
-    def create(self, *args, **kwargs):
-        return type('B', (), {'id': 'gen_batch'})
-
-class DummyGenClient:
-    def __init__(self):
-        self.files = DummyGenFiles()
-        self.batches = DummyGenBatches()
-
-class DummyDiffFiles:
-    def __init__(self, work_dir, raw_generated_path):
-        self.work_dir = work_dir
-        # Prepare content map for difficulty based on generated units
-        # Load generated UCs to get uc_ids
-        df = pd.read_parquet(raw_generated_path)
-        # Create difficulty assessments for each UC
-        assess = []
-        for uc_id in df['uc_id']:
-            assess.append({'uc_id': uc_id, 'difficulty_score': 50, 'justification': 'auto'})
-        inner = {'difficulty_assessments': assess}
-        inner_str = json.dumps(inner)
-        line = json.dumps({'custom_id': 'diff_eval_Lembrar_0', 'response': {'status_code': 200, 'body': {'choices': [{'message': {'content': inner_str}}]}}})
-        self.data = line.encode('utf-8')
-    def create(self, file, purpose):
-        # For upload create
-        return type('F', (), {'id': 'diff_file'})
-    def content(self, file_id):
-        # Retorna objeto com método read() que devolve os bytes preparados
-        class C:
-            def __init__(inner): inner._data = self.data
-            def read(inner): return inner._data
-        return C()
-
-class DummyDiffBatches:
-    def create(self, *args, **kwargs):
-        return type('B', (), {'id': 'diff_batch'})
-
-class DummyDiffClient:
-    def __init__(self, work_dir):
-        # Path to generated UCs raw parquet
-        raw_generated = work_dir / '2_generated_ucs' / (pt.GENERATED_UCS_RAW + '.parquet')
-        self.files = DummyDiffFiles(work_dir, raw_generated)
-        self.batches = DummyDiffBatches()
-
-def test_full_pipeline_integration(setup_dirs, monkeypatch):
+def test_full_pipeline_integration(setup_dirs, monkeypatch, dummy_client):
     input_dir, work_dir = setup_dirs
     # 1) Cria arquivos de input
     # Entidades: uma entidade simples
@@ -106,10 +52,12 @@ def test_full_pipeline_integration(setup_dirs, monkeypatch):
     origins_path = work_dir / '1_origins' / 'uc_origins.parquet'
     assert origins_path.exists()
     # 3) Run generation submission and processing
-    # Monkeypatch OPENAI_CLIENT to generation dummy
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', DummyGenClient())
+    # Monkeypatch OPENAI_CLIENT para geração
+    client_gen = dummy_client
+    monkeypatch.setattr(pt, 'OPENAI_CLIENT', client_gen)
     gen_batch = pt.task_submit_uc_generation_batch()
-    assert gen_batch == 'gen_batch'
+    # DummyBatches.create retorna id 'batch123'
+    assert gen_batch == 'batch123'
     # Prepare dummy generation result for processing
     # Build JSONL with 6 units for the single origin
     origins = pd.read_parquet(origins_path).to_dict('records')
@@ -120,14 +68,11 @@ def test_full_pipeline_integration(setup_dirs, monkeypatch):
     inner = {'generated_units': units}
     data_str = json.dumps(inner)
     line = json.dumps({'custom_id': f"gen_req_{origins[0]['origin_id']}_0", 'response': {'status_code': 200, 'body': {'choices': [{'message': {'content': data_str}}]}}})
-    # Monkeypatch files.content to return this generation line
-    class DummyGenContent:
-        def __init__(self, data): self._data = data
-        def read(self): return self._data
-    # Override content method on files
-    monkeypatch.setattr(pt.OPENAI_CLIENT.files, 'content', lambda fid: DummyGenContent(line.encode('utf-8')))
-    # Process generation
-    ok_gen = pt.process_batch_results(gen_batch, 'gen_file', None, work_dir / '2_generated_ucs', pt.GENERATED_UCS_RAW)
+    # Setup conteúdo de retorno para arquivo gerado (file123)
+    file_id = client_gen.files.last_file_obj.id
+    client_gen.files.content_map = {file_id: line.encode('utf-8')}
+    # Processa geração
+    ok_gen = pt.process_batch_results(gen_batch, file_id, None, work_dir / '2_generated_ucs', pt.GENERATED_UCS_RAW)
     assert ok_gen
     gen_path = work_dir / '2_generated_ucs' / 'generated_ucs_raw.parquet'
     assert gen_path.exists()
@@ -140,10 +85,22 @@ def test_full_pipeline_integration(setup_dirs, monkeypatch):
     assert rels_file.exists()
 
     # 5) Submit and process difficulty
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', DummyDiffClient(work_dir))
+    # Monkeypatch OPENAI_CLIENT para dificuldade
+    # Gera conteúdo baseado no arquivo gerado anterior
+    # Prepara lista de assessments
+    df_gen = pd.read_parquet(work_dir / '2_generated_ucs' / (pt.GENERATED_UCS_RAW + '.parquet'))
+    assess = [{"uc_id": uc, "difficulty_score": 50, "justification": "auto"} for uc in df_gen['uc_id']]
+    inner_diff = {"difficulty_assessments": assess}
+    diff_line = json.dumps({"custom_id": "diff_eval_Lembrar_0",
+                            "response": {"status_code": 200,
+                                         "body": {"choices": [{"message": {"content": json.dumps(inner_diff)}}]}}})
+    # Novo cliente para dificuldade
+    ClientClass = type(client_gen)
+    client_diff = ClientClass({file_id: diff_line.encode('utf-8')})
+    monkeypatch.setattr(pt, 'OPENAI_CLIENT', client_diff)
     diff_batch = pt.task_submit_difficulty_batch()
-    assert diff_batch == 'diff_batch'
-    ok_diff = pt.process_batch_results(diff_batch, 'diff_file', None, work_dir / '4_difficulty_evals', pt.UC_EVALUATIONS_RAW)
+    assert diff_batch == 'batch123'
+    ok_diff = pt.process_batch_results(diff_batch, file_id, None, work_dir / '4_difficulty_evals', pt.UC_EVALUATIONS_RAW)
     assert ok_diff
     diff_path = work_dir / '4_difficulty_evals' / (pt.UC_EVALUATIONS_RAW + '.parquet')
     assert diff_path.exists()
