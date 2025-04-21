@@ -19,7 +19,13 @@ import time
 import datetime
 
 from scripts.io_utils import save_dataframe, load_dataframe
-from scripts.origins_utils import prepare_uc_origins, _get_sort_key, _select_origins_for_testing
+from scripts.origins_utils import (
+    prepare_uc_origins,
+    _get_sort_key,
+    _select_origins_for_testing,
+    DefaultSelector,
+    HubNeighborSelector,
+)
 from scripts.rel_utils import _prepare_expands_lookups, _create_expands_links, _add_relationships_avoiding_duplicates
 from scripts.difficulty_utils import _format_difficulty_prompt, _calculate_final_difficulty_from_raw
 from scripts.batch_utils import check_batch_status, process_batch_results
@@ -116,9 +122,12 @@ def task_submit_uc_generation_batch(**context):
             return None
 
         all_origins = origins_df.to_dict('records')
-        origins_to_process = all_origins
+        # Seleção de origens via Strategy Pattern
         if MAX_ORIGINS_FOR_TESTING is not None and MAX_ORIGINS_FOR_TESTING > 0:
-            origins_to_process = _select_origins_for_testing(all_origins, BASE_INPUT_DIR, MAX_ORIGINS_FOR_TESTING)
+            selector = HubNeighborSelector(MAX_ORIGINS_FOR_TESTING, BASE_INPUT_DIR)
+        else:
+            selector = DefaultSelector(None)
+        origins_to_process = selector.select(all_origins)
         if not origins_to_process:
             logging.warning("Nenhuma origem selecionada para processar. Pulando submissão.")
             return None

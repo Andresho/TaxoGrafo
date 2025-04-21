@@ -2,10 +2,37 @@ import pandas as pd
 import logging
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Set, Optional
+from abc import ABC, abstractmethod
 
 # Ordem da taxonomia de Bloom
 BLOOM_ORDER = ["Lembrar", "Entender", "Aplicar", "Analisar", "Avaliar", "Criar"]
 BLOOM_ORDER_MAP = {level: i for i, level in enumerate(BLOOM_ORDER)}
+
+class OriginSelector(ABC):
+    """Interface para seleção de origens de UC."""
+    @abstractmethod
+    def select(self, all_origins: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Retorna a lista de origens selecionadas."""
+        pass
+
+class DefaultSelector(OriginSelector):
+    """Selector que retorna origens ordenadas e limitadas (ou todas)."""
+    def __init__(self, max_origins: Optional[int] = None):
+        self.max_origins = max_origins
+    def select(self, all_origins: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if self.max_origins is None or self.max_origins <= 0:
+            return all_origins
+        # ordena e retorna os primeiros max_origins
+        return sorted(all_origins, key=_get_sort_key)[: self.max_origins]
+
+class HubNeighborSelector(OriginSelector):
+    """Selector que foca em conexões de um hub e seus vizinhos."""
+    def __init__(self, max_origins: int, graphrag_output_dir: Path):
+        self.max_origins = max_origins
+        self.graphrag_output_dir = graphrag_output_dir
+    def select(self, all_origins: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        # Reutiliza lógica existente de seleção para teste
+        return _select_origins_for_testing(all_origins, self.graphrag_output_dir, self.max_origins)
 
 def prepare_uc_origins(
     entities_df: Optional[pd.DataFrame],
