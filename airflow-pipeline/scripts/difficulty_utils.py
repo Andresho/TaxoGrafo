@@ -1,11 +1,7 @@
-import os
 import logging
-import json
 from typing import List, Dict, Any, Tuple
 from collections import defaultdict, Counter
-
-# Número mínimo de avaliações por UC
-MIN_EVALUATIONS_PER_UC = int(os.environ.get('MIN_EVALUATIONS_PER_UC', 1))
+from scripts.constants import MIN_EVALUATIONS_PER_UC
 
 def _format_difficulty_prompt(
     batch_ucs_data: List[Dict[str, Any]],

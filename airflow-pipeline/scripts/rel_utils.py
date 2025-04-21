@@ -3,9 +3,7 @@ import logging
 from typing import List, Dict, Any
 from collections import defaultdict
 
-# Ordem da taxonomia de Bloom para filtragem
-BLOOM_ORDER = ["Lembrar", "Entender", "Aplicar", "Analisar", "Avaliar", "Criar"]
-BLOOM_ORDER_MAP = {level: i for i, level in enumerate(BLOOM_ORDER)}
+from scripts.constants import BLOOM_ORDER, BLOOM_ORDER_MAP
 
 def _prepare_expands_lookups(
     entities_df: pd.DataFrame,

@@ -3,10 +3,7 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Set, Optional
 from abc import ABC, abstractmethod
-
-# Ordem da taxonomia de Bloom
-BLOOM_ORDER = ["Lembrar", "Entender", "Aplicar", "Analisar", "Avaliar", "Criar"]
-BLOOM_ORDER_MAP = {level: i for i, level in enumerate(BLOOM_ORDER)}
+from scripts.constants import BLOOM_ORDER, BLOOM_ORDER_MAP
 
 class OriginSelector(ABC):
     """Interface para seleção de origens de UC."""

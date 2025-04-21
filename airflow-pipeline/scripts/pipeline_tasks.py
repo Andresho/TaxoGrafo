@@ -2,19 +2,16 @@
 
 import pandas as pd
 from pathlib import Path
-from typing import List, Dict, Optional, Any, Tuple, Set
+from typing import List, Dict, Optional, Any
 import logging
-import os
 import json
-import uuid
-from collections import defaultdict, Counter
+from collections import defaultdict
 import random
 try:
     from openai import OpenAI  # Importa cliente OpenAI padrão para Batch API
 except ImportError:
     OpenAI = None
 from dotenv import load_dotenv
-import math
 import time
 import datetime
 
@@ -26,43 +23,47 @@ from scripts.origins_utils import (
     DefaultSelector,
     HubNeighborSelector,
 )
-from scripts.rel_utils import _prepare_expands_lookups, _create_expands_links, _add_relationships_avoiding_duplicates
 from scripts.difficulty_utils import _format_difficulty_prompt, _calculate_final_difficulty_from_raw
 from scripts.batch_utils import check_batch_status, process_batch_results
+from scripts.rel_utils import _add_relationships_avoiding_duplicates, _create_expands_links, _prepare_expands_lookups
+from scripts.difficulty_utils import _format_difficulty_prompt, _calculate_final_difficulty_from_raw
+from scripts.rel_builders import RequiresBuilder, ExpandsBuilder
+from scripts.constants import (
+    MAX_ORIGINS_FOR_TESTING,
+    BLOOM_ORDER,
+    BLOOM_ORDER_MAP,
+    PROMPT_UC_GENERATION_FILE,
+    PROMPT_UC_DIFFICULTY_FILE,
+    LLM_MODEL,
+    LLM_TEMPERATURE_GENERATION,
+    LLM_TEMPERATURE_DIFFICULTY,
+    DIFFICULTY_BATCH_SIZE,
+    MIN_EVALUATIONS_PER_UC,
+    BATCH_FILES_DIR,
+    AIRFLOW_DATA_DIR,
+    BASE_INPUT_DIR,
+    PIPELINE_WORK_DIR,
+    BATCH_FILES_DIR,
+    stage1_dir,
+    stage2_output_ucs_dir,
+    stage3_dir,
+    stage4_input_batch_dir,
+    stage4_output_eval_dir,
+    stage5_dir,
+    GENERATED_UCS_RAW,
+    UC_EVALUATIONS_RAW,
+    REL_TYPE_REQUIRES,
+    REL_TYPE_EXPANDS,
+    REL_INTERMEDIATE,
+    FINAL_UC_FILE,
+    FINAL_REL_FILE,
+)
 
 # --- Configurações Globais ---
 # Carrega variáveis de ambiente ANTES de usá-las
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Parâmetros configuráveis (poderiam vir de variáveis de ambiente ou config do Airflow)
-MAX_ORIGINS_FOR_TESTING: Optional[int] = os.environ.get('MAX_ORIGINS_FOR_TESTING', None)
-if MAX_ORIGINS_FOR_TESTING: MAX_ORIGINS_FOR_TESTING = int(MAX_ORIGINS_FOR_TESTING)
-
-BLOOM_ORDER = ["Lembrar", "Entender", "Aplicar", "Analisar", "Avaliar", "Criar"]
-BLOOM_ORDER_MAP = {level: i for i, level in enumerate(BLOOM_ORDER)}
-PROMPT_UC_GENERATION_FILE = Path("/opt/airflow/scripts/prompt_uc_generation.txt") # Caminho dentro do container
-PROMPT_UC_DIFFICULTY_FILE = Path("/opt/airflow/scripts/prompt_uc_difficulty.txt") # Caminho dentro do container
-LLM_MODEL = os.environ.get('LLM_MODEL', "gpt-4o-mini")
-LLM_TEMPERATURE_GENERATION = float(os.environ.get('LLM_TEMPERATURE_GENERATION', 0.2))
-LLM_TEMPERATURE_DIFFICULTY = float(os.environ.get('LLM_TEMPERATURE_DIFFICULTY', 0.1))
-DIFFICULTY_BATCH_SIZE = int(os.environ.get('DIFFICULTY_BATCH_SIZE', 5))
-MIN_EVALUATIONS_PER_UC = int(os.environ.get('MIN_EVALUATIONS_PER_UC', 1)) # Simplificado para 1
-# BATCH API não usa concorrência configurável do nosso lado
-# UC_GENERATION_BATCH_SIZE = 20 # Não relevante para Batch API (tamanho do arquivo é o limite)
-
-# Diretórios (dentro do container Airflow)
-AIRFLOW_DATA_DIR = Path("/opt/airflow/data")
-BASE_INPUT_DIR = AIRFLOW_DATA_DIR / "graphrag_outputs"
-PIPELINE_WORK_DIR = AIRFLOW_DATA_DIR / "pipeline_workdir"
-BATCH_FILES_DIR = PIPELINE_WORK_DIR / "batch_files"
-stage1_dir = PIPELINE_WORK_DIR / "1_origins"
-stage2_output_ucs_dir = PIPELINE_WORK_DIR / "2_generated_ucs"
-stage3_dir = PIPELINE_WORK_DIR / "3_relationships"
-stage4_input_batch_dir = BATCH_FILES_DIR # Reutiliza para dificuldade
-stage4_output_eval_dir = PIPELINE_WORK_DIR / "4_difficulty_evals"
-stage5_dir = PIPELINE_WORK_DIR / "5_final_outputs"
 
 # --- Inicialização Cliente OpenAI Padrão ---
 OPENAI_CLIENT: Optional[OpenAI] = None
@@ -72,21 +73,10 @@ try:
 except Exception as e:
     logging.error(f"Falha ao inicializar cliente OpenAI: {e}. Verifique API Key.")
 
-# Constantes para evitar magic strings e configuração centralizada
-GENERATED_UCS_RAW = "generated_ucs_raw"
-UC_EVALUATIONS_RAW = "uc_evaluations_aggregated_raw"
-REL_TYPE_REQUIRES = "REQUIRES"
-REL_TYPE_EXPANDS = "EXPANDS"
-# DEFAULT_OUTPUT_COLUMNS: para DataFrames vazios de batch
 DEFAULT_OUTPUT_COLUMNS = {
     GENERATED_UCS_RAW: ["uc_id", "origin_id", "bloom_level", "uc_text"],
     UC_EVALUATIONS_RAW: ["uc_id", "difficulty_score", "justification"]
 }
-
-# Nomes de arquivos intermediários e finais
-REL_INTERMEDIATE = "knowledge_relationships_intermediate"
-FINAL_UC_FILE = "final_knowledge_units"
-FINAL_REL_FILE = "final_knowledge_relationships"
 
 # --- Funções Auxiliares de Lógica ---
 
@@ -208,51 +198,39 @@ task_wait_and_process_batch = task_wait_and_process_batch_generic
 
 
 def task_define_relationships(**context):
-    """Tarefa: Define relações REQUIRES e EXPANDS."""
-    # ... (lógica como antes, lendo de stage2_output_ucs_dir, salvando em stage3_dir) ...
+    """Tarefa: Define relações REQUIRES e EXPANDS usando Builders."""
     logging.info("--- TASK: define_relationships ---")
     try:
-        generated_ucs_df = load_dataframe(stage2_output_ucs_dir, GENERATED_UCS_RAW)
-        if generated_ucs_df is None or generated_ucs_df.empty:
+        # Carrega UCs geradas
+        generated_df = load_dataframe(stage2_output_ucs_dir, GENERATED_UCS_RAW)
+        if generated_df is None or generated_df.empty:
             logging.warning("Nenhuma UC para definir relações.")
+            # Salva DataFrame vazio com colunas mínimas
             save_dataframe(pd.DataFrame(columns=["source", "target", "type"]), stage3_dir, REL_INTERMEDIATE)
             return
-        generated_ucs = generated_ucs_df.to_dict('records')
-        all_relationships: List[Dict[str, Any]] = []
-        ucs_by_origin: Dict[str, List[Dict]] = defaultdict(list)
-        for uc in generated_ucs:
-            if uc.get("origin_id"): ucs_by_origin[uc.get("origin_id")].append(uc)
-        new_requires_rels: List[Dict[str, Any]] = []
-        for origin_id, ucs_in_group in ucs_by_origin.items():
-            sorted_ucs = sorted(
-                ucs_in_group,
-                key=lambda uc: BLOOM_ORDER_MAP.get(uc.get("bloom_level"), 99)
-            )
-            for i in range(len(sorted_ucs) - 1):
-                s_uc, t_uc = sorted_ucs[i], sorted_ucs[i + 1]
-                s_idx = BLOOM_ORDER_MAP.get(s_uc.get("bloom_level"))
-                t_idx = BLOOM_ORDER_MAP.get(t_uc.get("bloom_level"))
-                if s_idx is not None and t_idx is not None and t_idx == s_idx + 1:
-                    new_requires_rels.append({
-                        "source": s_uc.get("uc_id"),
-                        "target": t_uc.get("uc_id"),
-                        "type": "REQUIRES",
-                        "origin_id": origin_id
-                    })
-        all_relationships = _add_relationships_avoiding_duplicates(all_relationships, new_requires_rels)
+        generated_ucs = generated_df.to_dict('records')
+        # Carrega dados para EXPANDS
         relationships_df = load_dataframe(BASE_INPUT_DIR, "relationships")
         entities_df = load_dataframe(BASE_INPUT_DIR, "entities")
-        if relationships_df is not None and entities_df is not None:
-            entity_name_to_id, ucs_by_origin_level = _prepare_expands_lookups(entities_df, generated_ucs)
-            if entity_name_to_id: new_expands_rels = _create_expands_links(relationships_df, entity_name_to_id, ucs_by_origin_level); all_relationships = _add_relationships_avoiding_duplicates(all_relationships, new_expands_rels)
-            else: logging.warning("Pulando EXPANDS (mapa nome->ID falhou).")
-        else: logging.warning("Pulando EXPANDS (inputs não carregados).")
-        if all_relationships:
-            save_dataframe(pd.DataFrame(all_relationships), stage3_dir, REL_INTERMEDIATE)
+        # Contexto para builders
+        ctx = {
+            'generated_ucs': generated_ucs,
+            'relationships_df': relationships_df,
+            'entities_df': entities_df
+        }
+        # Encadeia builders: REQUIRES -> EXPANDS
+        builder = RequiresBuilder()
+        builder.set_next(ExpandsBuilder())
+        all_rels = builder.build([], ctx)
+        # Salva resultados
+        if all_rels:
+            save_dataframe(pd.DataFrame(all_rels), stage3_dir, REL_INTERMEDIATE)
         else:
             logging.warning("Nenhuma relação definida.")
             save_dataframe(pd.DataFrame(columns=["source", "target", "type"]), stage3_dir, REL_INTERMEDIATE)
-    except Exception as e: logging.exception("Falha na task_define_relationships"); raise
+    except Exception:
+        logging.exception("Falha na task_define_relationships")
+        raise
 
 def task_submit_difficulty_batch(**context):
     """Tarefa: Prepara e submete batch de avaliação de dificuldade (1 passada)."""
