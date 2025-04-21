@@ -5,10 +5,11 @@ import pytest
 
 import scripts.pipeline_tasks as pt
 from scripts.pipeline_tasks import process_batch_results, GENERATED_UCS_RAW, UC_EVALUATIONS_RAW
+import scripts.llm_client as llm_client
 
 def test_process_batch_results_no_client(monkeypatch):
-    # OPENAI_CLIENT None -> ValueError
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', None)
+    # Sem cliente injetado -> ValueError
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', None)
     with pytest.raises(ValueError):
         process_batch_results('b', 'out', None, pathlib.Path('/tmp'), GENERATED_UCS_RAW)
 
@@ -30,7 +31,8 @@ def test_process_batch_results_success(tmp_path, monkeypatch, dummy_client):
     content_map = {'out': line.encode('utf-8')}
     # Usa dummy_client fornecido por fixture
     dummy_client.files.content_map = content_map
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
+    # Injeção do cliente dummy para leitura de arquivo
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', dummy_client)
     # Capture save_dataframe
     saved = {}
     def fake_save_dataframe(df, stage_dir, filename):
@@ -59,7 +61,7 @@ def test_process_batch_results_all_errors(tmp_path, monkeypatch, dummy_client):
     line = json.dumps(outer)
     content_map = {'out2': line.encode('utf-8')}
     dummy_client.files.content_map = content_map
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', dummy_client)
     # save_dataframe não deve ser chamado; se chamado, falha
     def bad_save(*args, **kwargs):
         pytest.skip("save_dataframe should not be called on all errors")
@@ -84,7 +86,7 @@ def test_process_batch_results_with_code_fence(tmp_path, monkeypatch, dummy_clie
     line = json.dumps(outer)
     content_map = {'outf': line.encode('utf-8')}
     dummy_client.files.content_map = content_map
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', dummy_client)
     # Intercepta save_dataframe
     saved = {}
     def fake_save(df, stage_dir, filename):
@@ -110,7 +112,7 @@ def test_process_batch_results_plain_code_fence(tmp_path, monkeypatch, dummy_cli
              "body": {"choices": [{"message": {"content": fenced}}]}}}
     line = json.dumps(outer)
     dummy_client.files.content_map = {'f': line.encode()}
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', dummy_client)
     saved = {}
     monkeypatch.setattr(pt, 'save_dataframe', lambda df, sd, fn: saved.update(df=df))
     ok = process_batch_results('b', 'f', None, tmp_path, GENERATED_UCS_RAW)
@@ -131,7 +133,7 @@ def test_process_batch_results_mixed_valid_and_invalid(tmp_path, monkeypatch, du
                       "body": {"choices": [{"message": {"content": "{not a json}"}}]}}}
     content = '\n'.join([json.dumps(outer_valid), json.dumps(outer_invalid)])
     dummy_client.files.content_map = {'mix': content.encode()}
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', dummy_client)
     # Capture save_dataframe
     saved = {}
     monkeypatch.setattr(pt, 'save_dataframe', lambda df, sd, fn: saved.update(df=df))
@@ -154,7 +156,7 @@ def test_process_batch_results_difficulty_success(tmp_path, monkeypatch, dummy_c
              "body": {"choices": [{"message": {"content": inner_str}}]}}}
     content = json.dumps(outer)
     dummy_client.files.content_map = {'dout': content.encode()}
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', dummy_client)
     saved = {}
     def fake_save(df, sd, fn): saved.update(df=df)
     monkeypatch.setattr(pt, 'save_dataframe', fake_save)
@@ -175,7 +177,7 @@ def test_process_batch_results_difficulty_missing_list(tmp_path, monkeypatch, du
              "body": {"choices": [{"message": {"content": inner_str}}]}}}
     content = json.dumps(outer)
     dummy_client.files.content_map = {'d2': content.encode()}
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', dummy_client)
     # save_dataframe não deve ser chamado, retorno False
     monkeypatch.setattr(pt, 'save_dataframe', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Não deve salvar")))
     # Quando não há assessments mas sem erros, retorna True e não salva

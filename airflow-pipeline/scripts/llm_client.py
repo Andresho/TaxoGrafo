@@ -6,15 +6,23 @@ from abc import ABC, abstractmethod
 from typing import Tuple, Optional
 from pathlib import Path
 
+# Permite injeção de cliente para testes (dummy, etc.)
+OPENAI_CLIENT: Optional[object] = None
+
+try:
+    from openai import OpenAI  # Importa cliente OpenAI padrão para Batch API
+except ImportError:
+    OpenAI = None
+
 def get_llm_strategy() -> "LLMClient":
-    """Cria e retorna uma estratégia LLM a partir de OPENAI_CLIENT."""
-    try:
-        from scripts.pipeline_tasks import OPENAI_CLIENT
-    except ImportError:
+    """Cria e retorna uma estratégia LLM: usa OPENAI_CLIENT injetado ou o cliente OpenAI padrão."""
+    # Se há cliente injetado para testes, usa-o
+    if OPENAI_CLIENT is not None:
+        return OpenAIBatchClient(OPENAI_CLIENT)
+    # Senão, usa cliente real
+    if OpenAI is None:
         raise ValueError("OpenAI client não inicializado")
-    if OPENAI_CLIENT is None:
-        raise ValueError("OpenAI client não inicializado")
-    return OpenAIBatchClient(OPENAI_CLIENT)
+    return OpenAIBatchClient()
 
 class LLMClient(ABC):
     """Interface para comunicação com LLMs suportadas."""
@@ -39,9 +47,15 @@ class LLMClient(ABC):
         pass
 
 class OpenAIBatchClient(LLMClient):
-    """Implementação de LLMClient usando OpenAI Batch API."""
-    def __init__(self, openai_client):
-        self.client = openai_client
+    """Implementação de LLMClient usando OpenAI Batch API, com injeção opcional de cliente para testes."""
+    def __init__(self, client=None):
+        # Permite injeção de cliente (e.g., DummyClient) em testes
+        if client is not None:
+            self.client = client
+        else:
+            if OpenAI is None:
+                raise ValueError("OpenAI client não inicializado")
+            self.client = OpenAI()
 
     def upload_batch_file(self, file_path: Path) -> str:
         with open(file_path, 'rb') as f:

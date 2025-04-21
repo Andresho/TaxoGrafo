@@ -1,6 +1,5 @@
 import pandas as pd
 from pathlib import Path
-import logging
 from typing import Optional
 from scripts.data_lake import DataLake
 

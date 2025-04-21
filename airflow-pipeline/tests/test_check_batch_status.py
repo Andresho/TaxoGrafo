@@ -2,6 +2,7 @@ import pytest
 
 import scripts.pipeline_tasks as pt
 from scripts.pipeline_tasks import check_batch_status
+import scripts.llm_client as llm_client
 
 class DummyBatchSuccess:
     def __init__(self):
@@ -28,7 +29,8 @@ class DummyClientFailure:
 ])
 def test_check_batch_status(monkeypatch, caplog, client, expected_status, expected_out, expected_err, log_snippet):
     # Configura o cliente e executa
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', client)
+    # Injeção do cliente dummy para llm_client
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', client)
     status, out_id, err_id = check_batch_status('batchX')
     assert status == expected_status
     assert out_id == expected_out
@@ -39,7 +41,7 @@ def test_check_batch_status(monkeypatch, caplog, client, expected_status, expect
 
 def test_check_batch_status_no_client(monkeypatch):
     # Sem cliente inicializado -> ValueError
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', None)
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', None)
     with pytest.raises(ValueError) as excinfo:
         check_batch_status('batchZ')
     assert 'OpenAI client não inicializado' in str(excinfo.value)

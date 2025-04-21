@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 import scripts.pipeline_tasks as pt
+import scripts.llm_client as llm_client
 
 def test_submit_difficulty_batch_no_client(monkeypatch):
     with pytest.raises(ValueError) as exc:
@@ -11,7 +12,7 @@ def test_submit_difficulty_batch_no_client(monkeypatch):
     assert 'OpenAI client não inicializado' in str(exc.value)
 
 def test_submit_difficulty_batch_empty(monkeypatch, dummy_client):
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', dummy_client)
     # Sem UCs retorna None
     monkeypatch.setattr(pt, 'load_dataframe', lambda stage, name: None)
     rv = pt.task_submit_difficulty_batch()
@@ -22,7 +23,7 @@ def test_submit_difficulty_batch_empty(monkeypatch, dummy_client):
     assert rv2 is None
 
 def test_submit_difficulty_batch_success(monkeypatch, tmp_path, dummy_client):
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', dummy_client)
     # DataFrame com 1 UC
     df = pd.DataFrame([
         {'uc_id': 'uA', 'bloom_level': 'Lembrar', 'uc_text': 'textA'}

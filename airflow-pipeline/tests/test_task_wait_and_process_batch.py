@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 
 import scripts.pipeline_tasks as pt
+import scripts.llm_client as llm_client
 
 class FakeTI:
     def __init__(self, value):
@@ -40,8 +41,8 @@ def test_task_wait_and_process_batch_success(monkeypatch, tmp_path, dummy_client
         called['args'] = (batch_id, output_file_id, error_file_id, stage_dir, filename)
         return True
     monkeypatch.setattr(pt, 'process_batch_results', fake_process)
-    # Define cliente OpenAI dummy para evitar ValueError
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
+    # Injeta cliente dummy para get_llm_strategy
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', dummy_client)
     # Chama a tarefa; não deve lançar
     result = pt.task_wait_and_process_batch_generic('uc_generation', tmp_path, pt.GENERATED_UCS_RAW, ti=fake_ti)
     # Deve ter chamado process_batch_results com valores corretos

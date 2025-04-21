@@ -3,10 +3,11 @@ import pandas as pd
 import pytest
 
 import scripts.pipeline_tasks as pt
+import scripts.llm_client as llm_client
 
 def test_submit_uc_generation_batch_no_client(monkeypatch):
     # Cliente não inicializado
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', None)
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', None)
     with pytest.raises(ValueError) as exc:
         pt.task_submit_uc_generation_batch()
     # Deve usar get_llm_strategy e reportar erro de cliente não inicializado
@@ -14,7 +15,7 @@ def test_submit_uc_generation_batch_no_client(monkeypatch):
 
 def test_submit_uc_generation_batch_empty(monkeypatch, tmp_path, caplog, dummy_client):
     # load_dataframe retorna None e DataFrame vazio -> retorna None
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', dummy_client)
     monkeypatch.setattr(pt, 'load_dataframe', lambda dir, name: None)
     rv = pt.task_submit_uc_generation_batch()
     assert rv is None
@@ -25,7 +26,7 @@ def test_submit_uc_generation_batch_empty(monkeypatch, tmp_path, caplog, dummy_c
 
 def test_submit_uc_generation_batch_success(monkeypatch, tmp_path, dummy_client):
     # Configura cliente dummy
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', dummy_client)
     # Cria DataFrame com origens
     df = pd.DataFrame([
         {'origin_id': 'o1', 'title': 'T1', 'context': 'C1'},

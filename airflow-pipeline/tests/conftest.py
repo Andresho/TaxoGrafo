@@ -74,9 +74,14 @@ def fixed_datetime(monkeypatch):
     yield
 
 @pytest.fixture
-def dummy_client():
-    """Retorna um DummyClient com content_map vazio por padrão."""
-    return DummyClient()
+def dummy_client(monkeypatch):
+    """Retorna um DummyClient com content_map vazio por padrão e configura llm_client para usar este cliente."""
+    # Cria instância dummy e mocka o OpenAI no módulo llm_client para injeção
+    from scripts import llm_client
+    dummy = DummyClient()
+    # Injeção de cliente dummy para get_llm_strategy
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', dummy)
+    return dummy
     
 @pytest.fixture
 def sample_entities_df():

@@ -4,8 +4,8 @@ import json
 import uuid
 import pytest
 
-
 import scripts.pipeline_tasks as pt
+import scripts.llm_client as llm_client
 
 @pytest.fixture
 def setup_dirs(tmp_path, monkeypatch):
@@ -51,10 +51,10 @@ def test_full_pipeline_integration(setup_dirs, monkeypatch, dummy_client):
     # Verifica arquivo intermediário
     origins_path = work_dir / '1_origins' / 'uc_origins.parquet'
     assert origins_path.exists()
-    # 3) Run generation submission and processing
-    # Monkeypatch OPENAI_CLIENT para geração
+    # 3) Run generation submission e processing
+    # Injeção de cliente dummy para geração
     client_gen = dummy_client
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', client_gen)
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', client_gen)
     gen_batch = pt.task_submit_uc_generation_batch()
     # DummyBatches.create retorna id 'batch123'
     assert gen_batch == 'batch123'
@@ -85,8 +85,7 @@ def test_full_pipeline_integration(setup_dirs, monkeypatch, dummy_client):
     assert rels_file.exists()
 
     # 5) Submit and process difficulty
-    # Monkeypatch OPENAI_CLIENT para dificuldade
-    # Gera conteúdo baseado no arquivo gerado anterior
+    # Monkeypatch LLM client para usar cliente de dificuldade customizado
     # Prepara lista de assessments
     df_gen = pd.read_parquet(work_dir / '2_generated_ucs' / (pt.GENERATED_UCS_RAW + '.parquet'))
     assess = [{"uc_id": uc, "difficulty_score": 50, "justification": "auto"} for uc in df_gen['uc_id']]
@@ -97,7 +96,8 @@ def test_full_pipeline_integration(setup_dirs, monkeypatch, dummy_client):
     # Novo cliente para dificuldade
     ClientClass = type(client_gen)
     client_diff = ClientClass({file_id: diff_line.encode('utf-8')})
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', client_diff)
+    # Monkeypatcha o cliente bruto para as chamadas de dificuldade
+    monkeypatch.setattr(llm_client, 'OPENAI_CLIENT', client_diff)
     diff_batch = pt.task_submit_difficulty_batch()
     assert diff_batch == 'batch123'
     ok_diff = pt.process_batch_results(diff_batch, file_id, None, work_dir / '4_difficulty_evals', pt.UC_EVALUATIONS_RAW)

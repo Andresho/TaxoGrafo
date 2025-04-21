@@ -4,16 +4,8 @@ import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 import logging
-import json
 from collections import defaultdict
 import random
-try:
-    from openai import OpenAI  # Importa cliente OpenAI padrão para Batch API
-except ImportError:
-    OpenAI = None
-    
-# Cliente LLM (OpenAI) placeholder; pode ser monkey-patchado em testes
-OPENAI_CLIENT: Optional[OpenAI] = None
 from dotenv import load_dotenv
 import time
 import datetime
@@ -75,11 +67,7 @@ DEFAULT_OUTPUT_COLUMNS = {
     UC_EVALUATIONS_RAW: ["uc_id", "difficulty_score", "justification"]
 }
 
-# --- Funções Auxiliares de Lógica ---
-
-
 # --- Funções de Tarefa do DAG ---
-
 def task_prepare_origins(**context):
     """Tarefa 1: Prepara e salva uc_origins.parquet."""
     logging.info("--- TASK: prepare_origins ---")

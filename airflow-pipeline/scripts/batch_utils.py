@@ -171,8 +171,6 @@ def process_batch_results(
     output_filename: str
 ) -> bool:
     """Delegates batch processing to the appropriate processor."""
-    if not pt.OPENAI_CLIENT:
-        raise ValueError("OpenAI client não inicializado")
     # Seleciona o processor conforme o tipo de saída
     if output_filename == pt.GENERATED_UCS_RAW:
         processor = GenerationBatchProcessor(
