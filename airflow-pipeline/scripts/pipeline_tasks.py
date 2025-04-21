@@ -16,6 +16,7 @@ import time
 import datetime
 
 from scripts.io_utils import save_dataframe, load_dataframe
+from scripts.data_lake import DataLake
 from scripts.origins_utils import (
     prepare_uc_origins,
     _get_sort_key,
@@ -126,23 +127,38 @@ def task_submit_uc_generation_batch(**context):
             with open(PROMPT_UC_GENERATION_FILE, 'r', encoding='utf-8') as f: prompt_template = f.read()
         except Exception as e: raise ValueError(f"Erro lendo prompt UC Gen: {e}")
 
+        # Prepara registros de batch e salva como JSONL via DataLake
         BATCH_FILES_DIR.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         batch_input_filename = f"uc_generation_batch_{timestamp}.jsonl"
         batch_input_path = BATCH_FILES_DIR / batch_input_filename
-        request_count = 0
-        logging.info(f"Criando arquivo de batch: {batch_input_path}")
-        with open(batch_input_path, 'w', encoding='utf-8') as f_out:
-            for i, origin in enumerate(origins_to_process):
-                origin_id = origin.get("origin_id")
-                req_custom_id = f"gen_req_{origin_id}_{i}" # ID único por request
-                title = origin.get("title", "N/A"); context = origin.get("context", "")
-                formatted_prompt = prompt_template.replace("{{CONCEPT_TITLE}}", title).replace("{{CONTEXT}}", context if context else "N/A")
-                request_body = {"model": LLM_MODEL, "messages": [{"role":"system", "content":"..."}, {"role":"user", "content":formatted_prompt}], "temperature": LLM_TEMPERATURE_GENERATION, "response_format": {"type": "json_object"}}
-                request_line = {"custom_id": req_custom_id, "method": "POST", "url": "/v1/chat/completions", "body": request_body}
-                f_out.write(json.dumps(request_line) + '\n')
-                request_count += 1
-        logging.info(f"Arquivo criado com {request_count} requests.")
+        records = []
+        for i, origin in enumerate(origins_to_process):
+            origin_id = origin.get("origin_id")
+            req_custom_id = f"gen_req_{origin_id}_{i}"  # ID único por request
+            title = origin.get("title", "N/A"); context_text = origin.get("context", "")
+            formatted_prompt = (
+                prompt_template
+                .replace("{{CONCEPT_TITLE}}", title)
+                .replace("{{CONTEXT}}", context_text if context_text else "N/A")
+            )
+            request_body = {
+                "model": LLM_MODEL,
+                "messages": [
+                    {"role": "system", "content": "..."},
+                    {"role": "user", "content": formatted_prompt}
+                ],
+                "temperature": LLM_TEMPERATURE_GENERATION,
+                "response_format": {"type": "json_object"}
+            }
+            records.append({
+                "custom_id": req_custom_id,
+                "method": "POST",
+                "url": "/v1/chat/completions",
+                "body": request_body
+            })
+        DataLake.write_jsonl(records, batch_input_path)
+        logging.info(f"Arquivo batch de geração criado: {batch_input_path} ({len(records)} requests)")
 
         logging.info(f"Fazendo upload de {batch_input_path}...")
         with open(batch_input_path, "rb") as f: batch_input_file = OPENAI_CLIENT.files.create(file=f, purpose="batch")
@@ -245,39 +261,46 @@ def task_submit_difficulty_batch(**context):
         try:
             with open(PROMPT_UC_DIFFICULTY_FILE, 'r', encoding='utf-8') as f: prompt_template = f.read()
         except Exception as e: raise ValueError(f"Erro lendo prompt diff: {e}")
-        BATCH_FILES_DIR.mkdir(parents=True, exist_ok=True); timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S'); batch_input_filename = f"uc_difficulty_batch_{timestamp}.jsonl"; batch_input_path = BATCH_FILES_DIR / batch_input_filename; request_count = 0
-        ucs_by_bloom: Dict[str, List[Dict]] = defaultdict(list)
+        # Prepara registros de batch de dificuldade e salva JSONL via DataLake
+        BATCH_FILES_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        batch_input_filename = f"uc_difficulty_batch_{timestamp}.jsonl"
+        batch_input_path = BATCH_FILES_DIR / batch_input_filename
+        records = []
+        # Agrupa UCs por nivel de Bloom
+        ucs_by_bloom: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         for uc in generated_ucs:
-            if uc.get("bloom_level") in BLOOM_ORDER_MAP: ucs_by_bloom[uc.get("bloom_level")].append(uc)
-        with open(batch_input_path, 'w', encoding='utf-8') as f_out:
-            for bloom_level, ucs_in_level in ucs_by_bloom.items():
-                indices = list(range(len(ucs_in_level)))
-                random.shuffle(indices)
-                for i in range(0, len(indices), DIFFICULTY_BATCH_SIZE):
-                    batch_indices = indices[i:i + DIFFICULTY_BATCH_SIZE]
-                    batch_ucs_data = [ucs_in_level[idx] for idx in batch_indices]
-                    if not batch_ucs_data:
-                        continue
-                    formatted_prompt = _format_difficulty_prompt(batch_ucs_data, prompt_template)
-                    custom_batch_id = f"diff_eval_{bloom_level}_{i // DIFFICULTY_BATCH_SIZE}"
-                    request_body = {
-                        "model": LLM_MODEL,
-                        "messages": [
-                            {"role": "system", "content": "..."},
-                            {"role": "user", "content": formatted_prompt}
-                        ],
-                        "temperature": LLM_TEMPERATURE_DIFFICULTY,
-                        "response_format": {"type": "json_object"}
-                    }
-                    request_line = {
-                        "custom_id": custom_batch_id,
-                        "method": "POST",
-                        "url": "/v1/chat/completions",
-                        "body": request_body
-                    }
-                    f_out.write(json.dumps(request_line) + '\n')
-                    request_count += 1
-        logging.info(f"Arquivo batch diff {batch_input_path} criado ({request_count} requests).")
+            level = uc.get("bloom_level")
+            if level in BLOOM_ORDER_MAP:
+                ucs_by_bloom[level].append(uc)
+        # Cria requests por batch
+        for bloom_level, ucs_in_level in ucs_by_bloom.items():
+            indices = list(range(len(ucs_in_level)))
+            random.shuffle(indices)
+            for batch_idx, start in enumerate(range(0, len(indices), DIFFICULTY_BATCH_SIZE)):
+                batch_indices = indices[start:start + DIFFICULTY_BATCH_SIZE]
+                batch_ucs_data = [ucs_in_level[i] for i in batch_indices]
+                if not batch_ucs_data:
+                    continue
+                formatted_prompt = _format_difficulty_prompt(batch_ucs_data, prompt_template)
+                custom_batch_id = f"diff_eval_{bloom_level}_{batch_idx}"
+                request_body = {
+                    "model": LLM_MODEL,
+                    "messages": [
+                        {"role": "system", "content": "..."},
+                        {"role": "user", "content": formatted_prompt}
+                    ],
+                    "temperature": LLM_TEMPERATURE_DIFFICULTY,
+                    "response_format": {"type": "json_object"}
+                }
+                records.append({
+                    "custom_id": custom_batch_id,
+                    "method": "POST",
+                    "url": "/v1/chat/completions",
+                    "body": request_body
+                })
+        DataLake.write_jsonl(records, batch_input_path)
+        logging.info(f"Arquivo batch de dificuldade criado: {batch_input_path} ({len(records)} requests)")
         logging.info(f"Fazendo upload de {batch_input_path}...")
         with open(batch_input_path, "rb") as f: batch_input_file = OPENAI_CLIENT.files.create(file=f, purpose="batch"); logging.info(f"Upload concluído. File ID: {batch_input_file.id}")
         logging.info("Criando batch job de dificuldade..."); batch_job = OPENAI_CLIENT.batches.create(input_file_id=batch_input_file.id, endpoint="/v1/chat/completions", completion_window="24h", metadata={'description': 'UC Difficulty Evaluation Batch'}); batch_job_id = batch_job.id; logging.info(f"Batch job criado. Batch ID: {batch_job_id}")
