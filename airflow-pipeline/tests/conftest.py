@@ -13,6 +13,11 @@ class DummyContent:
     def read(self):
         return self._data
 
+class DummyFile:
+    """Represents a fake file resource with an ID."""
+    def __init__(self, file_id: str):
+        self.id = file_id
+
 class DummyFiles:
     """Simulates OpenAI file upload and download."""
     def __init__(self, content_map=None):
@@ -20,17 +25,23 @@ class DummyFiles:
         self.last_purpose = None
         # Mapping file_id -> bytes data for content()
         self.content_map = content_map or {}
+        self.last_file_obj = None
     def create(self, file, purpose):
         self.last_file = file
         self.last_purpose = purpose
-        # Return object with id attribute and store for retrieval
-        file_obj = type('F', (), {'id': 'file123'})
+        # Create and store a DummyFile instance
+        file_obj = DummyFile('file123')
         self.last_file_obj = file_obj
         return file_obj
     def content(self, file_id):
         if file_id not in self.content_map:
             raise KeyError(f"Unknown file_id {file_id}")
         return DummyContent(self.content_map[file_id])
+
+class DummyBatch:
+    """Represents a fake batch job resource with an ID."""
+    def __init__(self, batch_id: str):
+        self.id = batch_id
 
 class DummyBatches:
     """Simulates OpenAI batch creation."""
@@ -40,7 +51,7 @@ class DummyBatches:
     def create(self, *args, **kwargs):
         self.last_args = args
         self.last_kwargs = kwargs
-        return type('B', (), {'id': 'batch123'})
+        return DummyBatch('batch123')
 
 class DummyClient:
     """Combines DummyFiles and DummyBatches for a fake OpenAI client."""

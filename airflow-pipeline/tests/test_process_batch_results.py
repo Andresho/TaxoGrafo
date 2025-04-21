@@ -6,9 +6,9 @@ import pytest
 import scripts.pipeline_tasks as pt
 from scripts.pipeline_tasks import process_batch_results, GENERATED_UCS_RAW, UC_EVALUATIONS_RAW
 
-def test_process_batch_results_no_client():
+def test_process_batch_results_no_client(monkeypatch):
     # OPENAI_CLIENT None -> ValueError
-    pt.OPENAI_CLIENT = None
+    monkeypatch.setattr(pt, 'OPENAI_CLIENT', None)
     with pytest.raises(ValueError):
         process_batch_results('b', 'out', None, pathlib.Path('/tmp'), GENERATED_UCS_RAW)
 
