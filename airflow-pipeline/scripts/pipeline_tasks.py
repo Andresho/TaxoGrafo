@@ -222,8 +222,16 @@ def _create_expands_links(
                 if s_ucs and t_ucs:
                     for s_uc_id in s_ucs:
                         for t_uc_id in t_ucs:
-                            rel_ab={"source":s_uc_id,"target":t_uc_id,"type":"EXPANDS","weight":rel_weight,"graphrag_rel_desc":desc_clean}; new_expands_rels.append(rel_ab)
-                            rel_ba={"source":t_uc_id,"target":s_uc_id,"type":"EXPANDS","weight":rel_weight,"graphrag_rel_desc":desc_clean}; new_expands_rels.append(rel_ba)
+                            # Add a single undirected (bidirectional) EXPANDS relation once, canonically ordered
+                            u, v = sorted([s_uc_id, t_uc_id])
+                            rel = {
+                                # Undirected edge: list both UC IDs
+                                "nodes": [u, v],
+                                "type": "EXPANDS",
+                                "weight": rel_weight,
+                                "graphrag_rel_desc": desc_clean,
+                            }
+                            new_expands_rels.append(rel)
     logging.info(f"Processadas {processed_graphrag_rels} relações GraphRAG com UCs.");
     if skipped_missing_entity > 0: logging.warning(f"{skipped_missing_entity} relações puladas (entidade não mapeada).");
     logging.info(f"Candidatas a {len(new_expands_rels)} novas relações EXPANDS.")
