@@ -7,7 +7,8 @@ import scripts.pipeline_tasks as pt
 def test_submit_difficulty_batch_no_client(monkeypatch):
     with pytest.raises(ValueError) as exc:
         pt.task_submit_difficulty_batch()
-    assert 'Cliente OpenAI não inicializado' in str(exc.value)
+    # Deve utilizar get_llm_strategy e reportar erro de cliente não inicializado
+    assert 'OpenAI client não inicializado' in str(exc.value)
 
 def test_submit_difficulty_batch_empty(monkeypatch, dummy_client):
     monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)

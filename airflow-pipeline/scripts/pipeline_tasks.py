@@ -11,10 +11,14 @@ try:
     from openai import OpenAI  # Importa cliente OpenAI padrão para Batch API
 except ImportError:
     OpenAI = None
+    
+# Cliente LLM (OpenAI) placeholder; pode ser monkey-patchado em testes
+OPENAI_CLIENT: Optional[OpenAI] = None
 from dotenv import load_dotenv
 import time
 import datetime
 
+from scripts.llm_client import get_llm_strategy
 from scripts.io_utils import save_dataframe, load_dataframe
 from scripts.data_lake import DataLake
 from scripts.origins_utils import (
@@ -66,14 +70,6 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Inicialização Cliente OpenAI Padrão ---
-OPENAI_CLIENT: Optional[OpenAI] = None
-try:
-    OPENAI_CLIENT = OpenAI() # Pega API key do env var OPENAI_API_KEY por padrão
-    logging.info("Cliente OpenAI padrão inicializado.")
-except Exception as e:
-    logging.error(f"Falha ao inicializar cliente OpenAI: {e}. Verifique API Key.")
-
 DEFAULT_OUTPUT_COLUMNS = {
     GENERATED_UCS_RAW: ["uc_id", "origin_id", "bloom_level", "uc_text"],
     UC_EVALUATIONS_RAW: ["uc_id", "difficulty_score", "justification"]
@@ -104,7 +100,8 @@ def task_prepare_origins(**context):
 def task_submit_uc_generation_batch(**context):
     """Tarefa 2: Prepara JSONL e submete batch de geração UC."""
     logging.info("--- TASK: submit_uc_generation_batch ---")
-    if OPENAI_CLIENT is None: raise ValueError("Cliente OpenAI não inicializado")
+    # Garante que o LLM strategy está configurado
+    llm = get_llm_strategy()
     batch_job_id = None
     try:
         origins_df = load_dataframe(stage1_dir, "uc_origins")
@@ -160,13 +157,16 @@ def task_submit_uc_generation_batch(**context):
         DataLake.write_jsonl(records, batch_input_path)
         logging.info(f"Arquivo batch de geração criado: {batch_input_path} ({len(records)} requests)")
 
-        logging.info(f"Fazendo upload de {batch_input_path}...")
-        with open(batch_input_path, "rb") as f: batch_input_file = OPENAI_CLIENT.files.create(file=f, purpose="batch")
-        logging.info(f"Upload concluído. File ID: {batch_input_file.id}")
-
-        logging.info("Criando batch job na OpenAI...")
-        batch_job = OPENAI_CLIENT.batches.create(input_file_id=batch_input_file.id, endpoint="/v1/chat/completions", completion_window="24h", metadata={'description': 'UC Generation Batch'})
-        batch_job_id = batch_job.id
+        # Envia batch via LLM strategy
+        logging.info(f"Fazendo upload de {batch_input_path} via LLM strategy...")
+        file_id = llm.upload_batch_file(batch_input_path)
+        logging.info(f"Upload concluído. File ID: {file_id}")
+        logging.info("Criando batch job via LLM strategy...")
+        batch_job_id = llm.create_batch_job(
+            input_file_id=file_id,
+            endpoint="/v1/chat/completions",
+            metadata={'description': 'UC Generation Batch'}
+        )
         logging.info(f"Batch job criado. Batch ID: {batch_job_id}")
 
     except Exception as e:
@@ -189,7 +189,6 @@ def task_wait_and_process_batch_generic(batch_id_key: str, output_dir: Path, out
         return # Considera "sucesso" pois não havia nada a fazer
 
     logging.info(f"--- TASK: wait_and_process_{batch_id_key}_results (Batch ID: {batch_id}) ---")
-    if OPENAI_CLIENT is None: raise ValueError("Cliente OpenAI não inicializado")
 
     polling_interval_seconds = 60; max_polling_attempts = 120; attempts = 0
     while attempts < max_polling_attempts:
@@ -252,7 +251,8 @@ def task_submit_difficulty_batch(**context):
     """Tarefa: Prepara e submete batch de avaliação de dificuldade (1 passada)."""
     # ... (lógica como antes, lendo de stage2_output_ucs_dir) ...
     logging.info("--- TASK: submit_difficulty_batch ---")
-    if OPENAI_CLIENT is None: raise ValueError("Cliente OpenAI não inicializado")
+    # Garante que o LLM strategy está configurado
+    llm = get_llm_strategy()
     batch_job_id = None
     try:
         generated_ucs_df = load_dataframe(stage2_output_ucs_dir, "generated_ucs_raw")
@@ -301,9 +301,16 @@ def task_submit_difficulty_batch(**context):
                 })
         DataLake.write_jsonl(records, batch_input_path)
         logging.info(f"Arquivo batch de dificuldade criado: {batch_input_path} ({len(records)} requests)")
-        logging.info(f"Fazendo upload de {batch_input_path}...")
-        with open(batch_input_path, "rb") as f: batch_input_file = OPENAI_CLIENT.files.create(file=f, purpose="batch"); logging.info(f"Upload concluído. File ID: {batch_input_file.id}")
-        logging.info("Criando batch job de dificuldade..."); batch_job = OPENAI_CLIENT.batches.create(input_file_id=batch_input_file.id, endpoint="/v1/chat/completions", completion_window="24h", metadata={'description': 'UC Difficulty Evaluation Batch'}); batch_job_id = batch_job.id; logging.info(f"Batch job criado. Batch ID: {batch_job_id}")
+        logging.info(f"Fazendo upload de {batch_input_path} via LLM strategy...")
+        file_id = llm.upload_batch_file(batch_input_path)
+        logging.info(f"Upload concluído. File ID: {file_id}")
+        logging.info("Criando batch job de dificuldade via LLM strategy...")
+        batch_job_id = llm.create_batch_job(
+            input_file_id=file_id,
+            endpoint="/v1/chat/completions",
+            metadata={'description': 'UC Difficulty Evaluation Batch'}
+        )
+        logging.info(f"Batch job criado. Batch ID: {batch_job_id}")
     except Exception as e: logging.exception("Falha na task_submit_difficulty_batch"); raise
     return batch_job_id
 

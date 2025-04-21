@@ -3,21 +3,14 @@ import json
 import uuid
 import pandas as pd
 import scripts.pipeline_tasks as pt
+from scripts.llm_client import get_llm_strategy
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
-def check_batch_status(batch_id: str):
-    """Consulta status do batch e retorna (status, output_file_id, error_file_id)."""
-    if not pt.OPENAI_CLIENT:
-        raise ValueError("OpenAI client não inicializado")
-    try:
-        batch_job = pt.OPENAI_CLIENT.batches.retrieve(batch_id)
-        logging.info(f"Status do Batch {batch_id}: {batch_job.status}")
-        return batch_job.status, batch_job.output_file_id, batch_job.error_file_id
-    except Exception as e:
-        logging.error(f"Erro ao verificar status do batch {batch_id}: {e}")
-    return "API_ERROR", None, None
-    
+def check_batch_status(batch_id: str) -> Tuple[str, Optional[str], Optional[str]]:
+    """Consulta status do batch via LLM strategy e retorna (status, output_file_id, error_file_id)."""
+    llm = get_llm_strategy()
+    return llm.get_batch_status(batch_id)
 # --- Template Method para processar batches ---
 class BaseBatchProcessor(ABC):
     """Template Method para processar batches OpenAI."""
@@ -36,8 +29,9 @@ class BaseBatchProcessor(ABC):
         self.output_filename = output_filename
 
     def process(self) -> bool:
-        if not pt.OPENAI_CLIENT:
-            raise ValueError("OpenAI client não inicializado")
+        """Processa e persiste resultados do batch usando LLM strategy."""
+        from scripts.llm_client import get_llm_strategy
+        llm = get_llm_strategy()
         logging.info(f"Processando resultados do Batch {self.batch_id} (Output File: {self.output_file_id})...")
         processed_data: List[Dict[str, Any]] = []
         errors_in_batch = 0
@@ -45,7 +39,8 @@ class BaseBatchProcessor(ABC):
         try:
             if self.error_file_id:
                 self._log_error_file()
-            content_bytes = pt.OPENAI_CLIENT.files.content(self.output_file_id).read()
+            # Baixa conteúdo via LLM strategy
+            content_bytes = llm.read_file(self.output_file_id)
             result_content = content_bytes.decode('utf-8')
             logging.info(f"Arquivo de resultado {self.output_file_id} baixado.")
             for line in result_content.strip().split('\n'):
@@ -69,8 +64,11 @@ class BaseBatchProcessor(ABC):
         return all_ok
 
     def _log_error_file(self):
+        """Loga o conteúdo de erros do batch usando LLM strategy."""
+        llm = get_llm_strategy()
         try:
-            error_content = pt.OPENAI_CLIENT.files.content(self.error_file_id).read().decode('utf-8')
+            error_bytes = llm.read_file(self.error_file_id)
+            error_content = error_bytes.decode('utf-8')
             logging.warning(f"Erros individuais no batch {self.batch_id}:\n{error_content[:1000]}...")
         except Exception as ef:
             logging.error(f"Não leu arq erro {self.error_file_id}: {ef}")

@@ -9,7 +9,8 @@ def test_submit_uc_generation_batch_no_client(monkeypatch):
     monkeypatch.setattr(pt, 'OPENAI_CLIENT', None)
     with pytest.raises(ValueError) as exc:
         pt.task_submit_uc_generation_batch()
-    assert 'Cliente OpenAI não inicializado' in str(exc.value)
+    # Deve usar get_llm_strategy e reportar erro de cliente não inicializado
+    assert 'OpenAI client não inicializado' in str(exc.value)
 
 def test_submit_uc_generation_batch_empty(monkeypatch, tmp_path, caplog, dummy_client):
     # load_dataframe retorna None e DataFrame vazio -> retorna None
