@@ -22,25 +22,24 @@ class DummyClientFailure:
     def retrieve(self, batch_id):
         raise RuntimeError('API failure')
 
-def test_check_batch_status_success(monkeypatch):
-    # Cliente válido, retrieve bem-sucedido
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', DummyClientSuccess())
-    status, out_id, err_id = check_batch_status('batch1')
-    assert status == 'completed'
-    assert out_id == 'out123'
-    assert err_id == 'err123'
-
-def test_check_batch_status_api_error(monkeypatch, caplog):
-    # Cliente lança exceção -> retorna API_ERROR
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', DummyClientFailure())
-    status, out_id, err_id = check_batch_status('batch2')
-    assert status == 'API_ERROR'
-    assert out_id is None and err_id is None
-    assert 'Erro ao verificar status do batch' in caplog.text
+@pytest.mark.parametrize("client,expected_status,expected_out,expected_err,log_snippet", [
+    (DummyClientSuccess(), 'completed', 'out123', 'err123', None),
+    (DummyClientFailure(), 'API_ERROR', None, None, 'Erro ao verificar status do batch'),
+])
+def test_check_batch_status(monkeypatch, caplog, client, expected_status, expected_out, expected_err, log_snippet):
+    # Configura o cliente e executa
+    monkeypatch.setattr(pt, 'OPENAI_CLIENT', client)
+    status, out_id, err_id = check_batch_status('batchX')
+    assert status == expected_status
+    assert out_id == expected_out
+    assert err_id == expected_err
+    # Verifica log quando aplicável
+    if log_snippet:
+        assert log_snippet in caplog.text
 
 def test_check_batch_status_no_client(monkeypatch):
-    # OPENAI_CLIENT None -> ValueError
+    # Sem cliente inicializado -> ValueError
     monkeypatch.setattr(pt, 'OPENAI_CLIENT', None)
     with pytest.raises(ValueError) as excinfo:
-        check_batch_status('batch3')
+        check_batch_status('batchZ')
     assert 'OpenAI client não inicializado' in str(excinfo.value)

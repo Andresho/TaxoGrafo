@@ -1,35 +1,29 @@
 import pytest
 
-import pytest
-
 from scripts.pipeline_tasks import (
     _get_sort_key,
     _add_relationships_avoiding_duplicates,
     _format_difficulty_prompt,
 )
 
-def test_get_sort_key_community_report():
-    origin = {"origin_type": "community_report", "level": 5}
-    # score = 10000 - level = 9995, key = (1, -9995)
-    expected = (1, -(10000 - 5))
+@pytest.mark.parametrize("origin,expected", [
+    # Community report: priority 1, score = -(10000 - level)
+    ({"origin_type": "community_report", "level": 5},
+     (1, -(10000 - 5))),
+    # Entity person: priority 3, score = -(degree*10 + frequency)
+    ({"origin_type": "entity", "degree": 2, "frequency": 3, "entity_type": "person"},
+     (3, -(2*10 + 3))),
+    # Entity organization: priority 2, score = -(degree*10 + frequency)
+    ({"origin_type": "entity", "degree": 1, "frequency": 4, "entity_type": "organization"},
+     (2, -(1*10 + 4))),
+    # Entity default/unknown: priority 2, zero score
+    ({"origin_type": "entity", "degree": 0, "frequency": 0, "entity_type": "unknown"},
+     (2, 0)),
+    # Unrecognized type: priority 2, zero score
+    ({"origin_type": "other"}, (2, 0)),
+])
+def test_get_sort_key(origin, expected):
     assert _get_sort_key(origin) == expected
-
-@pytest.mark.parametrize(
-    ("degree", "frequency", "entity_type", "expected_priority", "expected_score"),
-    [
-        (2, 3, "person", 3, 2*10 + 3),
-        (1, 4, "organization", 2, 1*10 + 4),
-        (0, 0, "unknown", 2, 0),
-    ],
-)
-def test_get_sort_key_entity(degree, frequency, entity_type, expected_priority, expected_score):
-    origin = {"origin_type": "entity", "degree": degree, "frequency": frequency, "entity_type": entity_type}
-    assert _get_sort_key(origin) == (expected_priority, -expected_score)
-
-def test_get_sort_key_default():
-    # Unrecognized origin_type should yield default priority 2 and score 0
-    origin = {"origin_type": "other"}
-    assert _get_sort_key(origin) == (2, 0)
 
 def test_add_relationships_avoiding_duplicates_empty_new():
     existing = [{"source": "a", "target": "b", "type": "X"}]

@@ -4,52 +4,13 @@ import pytest
 
 import scripts.pipeline_tasks as pt
 
-class DummyFiles:
-    def __init__(self):
-        self.last_file = None
-        self.last_purpose = None
-    def create(self, file, purpose):
-        self.last_file = file
-        self.last_purpose = purpose
-        class FileObj:
-            id = 'file_diff'
-        return FileObj()
-
-class DummyBatches:
-    def __init__(self):
-        self.last_kwargs = None
-    def create(self, *args, **kwargs):
-        self.last_kwargs = kwargs
-        class BatchObj:
-            id = 'batch_diff'
-        return BatchObj()
-
-class DummyClient:
-    def __init__(self):
-        self.files = DummyFiles()
-        self.batches = DummyBatches()
-
-@pytest.fixture(autouse=True)
-def fixed_datetime(monkeypatch):
-    # Controla timestamp para nome de arquivo
-    import datetime
-    class FakeDateTime(datetime.datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return cls(2020,1,1,0,0,0)
-    monkeypatch.setattr(pt, 'datetime', datetime)
-    monkeypatch.setattr(pt.datetime, 'datetime', FakeDateTime)
-    yield
-
 def test_submit_difficulty_batch_no_client(monkeypatch):
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', None)
     with pytest.raises(ValueError) as exc:
         pt.task_submit_difficulty_batch()
     assert 'Cliente OpenAI não inicializado' in str(exc.value)
 
-def test_submit_difficulty_batch_empty(monkeypatch):
-    client = DummyClient()
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', client)
+def test_submit_difficulty_batch_empty(monkeypatch, dummy_client):
+    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
     # Sem UCs retorna None
     monkeypatch.setattr(pt, 'load_dataframe', lambda stage, name: None)
     rv = pt.task_submit_difficulty_batch()
@@ -59,9 +20,8 @@ def test_submit_difficulty_batch_empty(monkeypatch):
     rv2 = pt.task_submit_difficulty_batch()
     assert rv2 is None
 
-def test_submit_difficulty_batch_success(monkeypatch, tmp_path):
-    client = DummyClient()
-    monkeypatch.setattr(pt, 'OPENAI_CLIENT', client)
+def test_submit_difficulty_batch_success(monkeypatch, tmp_path, dummy_client):
+    monkeypatch.setattr(pt, 'OPENAI_CLIENT', dummy_client)
     # DataFrame com 1 UC
     df = pd.DataFrame([
         {'uc_id': 'uA', 'bloom_level': 'Lembrar', 'uc_text': 'textA'}
@@ -75,7 +35,8 @@ def test_submit_difficulty_batch_success(monkeypatch, tmp_path):
     monkeypatch.setattr(pt, 'BATCH_FILES_DIR', tmp_path)
     # Executa
     rv = pt.task_submit_difficulty_batch()
-    assert rv == 'batch_diff'
+    # DummyBatch returns id 'batch123'
+    assert rv == 'batch123'
     # Verifica arquivo gerado
     files = list(tmp_path.glob('uc_difficulty_batch_*.jsonl'))
     assert len(files) == 1
@@ -93,6 +54,7 @@ def test_submit_difficulty_batch_success(monkeypatch, tmp_path):
     assert any('END' in m.get('content','') for m in messages)
     assert 'ID: uA' in body['messages'][1]['content']
     # Verifica chamadas do cliente
-    assert client.files.last_purpose == 'batch'
-    assert client.batches.last_kwargs.get('input_file_id') == 'file_diff'
-    assert client.batches.last_kwargs.get('endpoint') == '/v1/chat/completions'
+    # Verifica chamadas do cliente (dummy_client)
+    assert dummy_client.files.last_purpose == 'batch'
+    assert dummy_client.batches.last_kwargs.get('input_file_id') == 'file123'
+    assert dummy_client.batches.last_kwargs.get('endpoint') == '/v1/chat/completions'

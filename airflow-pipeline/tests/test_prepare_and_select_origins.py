@@ -7,30 +7,21 @@ def make_df(cols, rows):
     # Conveniência para criar DataFrame com colunas faltantes
     return pd.DataFrame(rows, columns=cols)
 
-def test_prepare_uc_origins_basic_entity_and_report():
-    # DataFrame de entidades com valores completos
-    entities = pd.DataFrame([
-        {"id": "e1", "title": "Ent1", "description": "Desc1", "frequency": 3, "degree": 2, "type": "person"},
-        {"id": "e2", "title": "Ent2", "description": None, "frequency": None, "degree": None, "type": None},
-    ])
-    # DataFrame de relatórios de comunidade
-    reports = pd.DataFrame([
-        {"id": "r1", "community": "c1", "title": "Rep1", "summary": "Sum1", "level": 1},
-        {"id": "r2", "community": "c2", "title": "Rep2", "summary": None, "level": None},
-    ])
-    origins = prepare_uc_origins(entities, reports)
+def test_prepare_uc_origins_basic_entity_and_report(sample_entities_df, sample_reports_df):
+    # DataFrame de entidades e relatórios mínimos via fixtures
+    origins = prepare_uc_origins(sample_entities_df, sample_reports_df)
     # Deve combinar duas entidades e dois relatórios
     assert len(origins) == 4
     # Verifica campos padrão e coerência de tipos
-    ent1 = [o for o in origins if o['origin_id'] == 'e1'][0]
+    ent1 = next(o for o in origins if o['origin_id'] == 'e1')
     assert ent1['origin_type'] == 'entity'
     assert ent1['frequency'] == 3 and ent1['degree'] == 2 and ent1['entity_type'] == 'person'
-    ent2 = [o for o in origins if o['origin_id'] == 'e2'][0]
+    ent2 = next(o for o in origins if o['origin_id'] == 'e2')
     # Valores nulos devem virar 0 ou empty string
     assert ent2['frequency'] == 0 and ent2['degree'] == 0 and ent2['entity_type'] == 'unknown'
-    rep1 = [o for o in origins if o['origin_id'] == 'r1'][0]
+    rep1 = next(o for o in origins if o['origin_id'] == 'r1')
     assert rep1['origin_type'] == 'community_report' and rep1['community_human_id'] == 'c1'
-    rep2 = [o for o in origins if o['origin_id'] == 'r2'][0]
+    rep2 = next(o for o in origins if o['origin_id'] == 'r2')
     # summary None vira string vazia, level None vira 99
     assert rep2['context'] == '' and rep2['level'] == 99
 

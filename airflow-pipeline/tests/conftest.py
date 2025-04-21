@@ -3,6 +3,7 @@ import pathlib
 # Adiciona raiz do projeto (airflow-pipeline) ao PYTHONPATH para imports de scripts/
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 # --- Dummy Classes for Tests ---
+import pandas as pd
 import pytest
 import scripts.pipeline_tasks as pt
 
@@ -76,3 +77,19 @@ def fixed_datetime(monkeypatch):
 def dummy_client():
     """Retorna um DummyClient com content_map vazio por padrão."""
     return DummyClient()
+    
+@pytest.fixture
+def sample_entities_df():
+    """DataFrame mínimo de entidades para tests."""
+    return pd.DataFrame([
+        {"id": "e1", "title": "Ent1", "description": "Desc1", "frequency": 3, "degree": 2, "type": "person"},
+        {"id": "e2", "title": "Ent2", "description": None, "frequency": None, "degree": None, "type": None},
+    ])
+
+@pytest.fixture
+def sample_reports_df():
+    """DataFrame mínimo de community_reports para tests."""
+    return pd.DataFrame([
+        {"id": "r1", "community": "c1", "title": "Rep1", "summary": "Sum1", "level": 1},
+        {"id": "r2", "community": "c2", "title": "Rep2", "summary": None, "level": None},
+    ])
