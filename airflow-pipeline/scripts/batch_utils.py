@@ -3,6 +3,8 @@ import json
 import uuid
 import pandas as pd
 import scripts.pipeline_tasks as pt
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any, Tuple
 
 def check_batch_status(batch_id: str):
     """Consulta status do batch e retorna (status, output_file_id, error_file_id)."""
@@ -14,7 +16,154 @@ def check_batch_status(batch_id: str):
         return batch_job.status, batch_job.output_file_id, batch_job.error_file_id
     except Exception as e:
         logging.error(f"Erro ao verificar status do batch {batch_id}: {e}")
-        return "API_ERROR", None, None
+    return "API_ERROR", None, None
+    
+# --- Template Method para processar batches ---
+class BaseBatchProcessor(ABC):
+    """Template Method para processar batches OpenAI."""
+    def __init__(
+        self,
+        batch_id: str,
+        output_file_id: str,
+        error_file_id: str,
+        stage_output_dir,
+        output_filename: str
+    ):
+        self.batch_id = batch_id
+        self.output_file_id = output_file_id
+        self.error_file_id = error_file_id
+        self.stage_output_dir = stage_output_dir
+        self.output_filename = output_filename
+
+    def process(self) -> bool:
+        if not pt.OPENAI_CLIENT:
+            raise ValueError("OpenAI client não inicializado")
+        logging.info(f"Processando resultados do Batch {self.batch_id} (Output File: {self.output_file_id})...")
+        processed_data: List[Dict[str, Any]] = []
+        errors_in_batch = 0
+        all_ok = True
+        try:
+            if self.error_file_id:
+                self._log_error_file()
+            content_bytes = pt.OPENAI_CLIENT.files.content(self.output_file_id).read()
+            result_content = content_bytes.decode('utf-8')
+            logging.info(f"Arquivo de resultado {self.output_file_id} baixado.")
+            for line in result_content.strip().split('\n'):
+                errors_in_batch += self._process_line(line, processed_data)
+            logging.info(f"Processamento arquivo concluído. {len(processed_data)} registros. {errors_in_batch} erros.")
+            if processed_data:
+                df = pd.DataFrame(processed_data)
+                pt.save_dataframe(df, self.stage_output_dir, self.output_filename)
+                if errors_in_batch > 0:
+                    logging.warning("Processamento concluído, mas com erros individuais no batch.")
+                all_ok = True
+            elif errors_in_batch > 0:
+                logging.error("Nenhum dado processado com sucesso do batch.")
+                all_ok = False
+            else:
+                logging.warning("Nenhum dado encontrado no arquivo de resultados do batch.")
+                all_ok = True
+        except Exception:
+            logging.exception(f"Falha ao baixar/processar arquivo {self.output_file_id} do batch {self.batch_id}.")
+            all_ok = False
+        return all_ok
+
+    def _log_error_file(self):
+        try:
+            error_content = pt.OPENAI_CLIENT.files.content(self.error_file_id).read().decode('utf-8')
+            logging.warning(f"Erros individuais no batch {self.batch_id}:\n{error_content[:1000]}...")
+        except Exception as ef:
+            logging.error(f"Não leu arq erro {self.error_file_id}: {ef}")
+
+    def _process_line(self, line: str, processed_data: List[Dict[str, Any]]) -> int:
+        errors = 0
+        try:
+            line_data = json.loads(line)
+            custom_id = line_data.get("custom_id", "unknown_custom_id")
+            origin_id = self._extract_origin_id(custom_id)
+            error = line_data.get("error")
+            if error:
+                errors += 1
+                logging.error(f"Erro batch {custom_id}: {error.get('message')}")
+                return errors
+            response = line_data.get("response")
+            if not response or response.get("status_code") != 200:
+                errors += 1
+                logging.warning(f"Request {custom_id} status não OK: {response}")
+                return errors
+            body = response.get("body", {})
+            choice = (body.get("choices") or [{}])[0]
+            message_content = choice.get("message", {}).get("content")
+            if not message_content:
+                errors += 1
+                logging.warning(f"Resposta OK sem conteúdo {custom_id}")
+                return errors
+            content_cleaned = message_content.strip()
+            if content_cleaned.startswith("```json"):
+                content_cleaned = content_cleaned[7:-3].strip()
+            elif content_cleaned.startswith("```"):
+                content_cleaned = content_cleaned[3:-3].strip()
+            try:
+                inner_data = json.loads(content_cleaned)
+            except json.JSONDecodeError as e:
+                errors += 1
+                logging.error(f"Erro JSON decode interno {custom_id}: {e}")
+                return errors
+            items, errs = self.parse_inner(inner_data, origin_id)
+            processed_data.extend(items)
+            errors += errs
+        except Exception as e:
+            errors += 1
+            logging.error(f"Erro processando linha: {e}. Linha: {line[:100]}...")
+        return errors
+
+    def _extract_origin_id(self, custom_id: str) -> str:
+        if custom_id.startswith("gen_req_"):
+            parts = custom_id.split("_")
+            return "_".join(parts[2:-1])
+        return custom_id
+
+    @abstractmethod
+    def parse_inner(self, inner_data: Dict[str, Any], origin_id: str) -> Tuple[List[Dict[str, Any]], int]:
+        """Extrai itens processados de inner_data e retorna (itens, numero_de_erros)."""
+        ...
+
+class GenerationBatchProcessor(BaseBatchProcessor):
+    def parse_inner(self, inner_data: Dict[str, Any], origin_id: str) -> Tuple[List[Dict[str, Any]], int]:
+        items = []
+        errors = 0
+        units = inner_data.get("generated_units", [])
+        if not isinstance(units, list) or len(units) != 6:
+            errors += 1
+            logging.warning(f"JSON interno {origin_id} != 6 UCs")
+            return items, errors
+        for unit in units:
+            if isinstance(unit, dict) and "bloom_level" in unit and "uc_text" in unit:
+                record = unit.copy()
+                record["uc_id"] = str(uuid.uuid4())
+                record["origin_id"] = origin_id
+                items.append(record)
+            else:
+                errors += 1
+                logging.warning(f"Formato UC inválido para {origin_id}: {unit}")
+        return items, errors
+
+class DifficultyBatchProcessor(BaseBatchProcessor):
+    def parse_inner(self, inner_data: Dict[str, Any], origin_id: str) -> Tuple[List[Dict[str, Any]], int]:
+        items = []
+        errors = 0
+        assessments = inner_data.get("difficulty_assessments", [])
+        if not isinstance(assessments, list):
+            errors += 1
+            logging.warning(f"JSON interno {origin_id} sem lista 'difficulty_assessments'")
+            return items, errors
+        for assessment in assessments:
+            if isinstance(assessment, dict) and "uc_id" in assessment and "difficulty_score" in assessment:
+                items.append(assessment)
+            else:
+                errors += 1
+                logging.warning(f"Formato assessment inválido para {origin_id}: {assessment}")
+        return items, errors
 
 def process_batch_results(
     batch_id: str,
@@ -23,100 +172,18 @@ def process_batch_results(
     stage_output_dir,
     output_filename: str
 ) -> bool:
-    """Baixa e processa o arquivo de resultados do batch."""
+    """Delegates batch processing to the appropriate processor."""
     if not pt.OPENAI_CLIENT:
         raise ValueError("OpenAI client não inicializado")
-    logging.info(f"Processando resultados do Batch {batch_id} (Output File: {output_file_id})...")
-    processed_data = []
-    errors_in_batch = 0
-    all_ok = True
-    try:
-        # Logar erros do batch se existirem
-        if error_file_id:
-            try:
-                error_content = pt.OPENAI_CLIENT.files.content(error_file_id).read().decode('utf-8')
-                logging.warning(f"Erros individuais no batch {batch_id}:\n{error_content[:1000]}...")
-            except Exception as ef:
-                logging.error(f"Não leu arq erro {error_file_id}: {ef}")
-        # Baixar e processar resultados
-        result_content_bytes = pt.OPENAI_CLIENT.files.content(output_file_id).read()
-        result_content = result_content_bytes.decode('utf-8')
-        logging.info(f"Arquivo de resultado {output_file_id} baixado.")
-        for line in result_content.strip().split('\n'):
-            try:
-                line_data = json.loads(line)
-                custom_id = line_data.get("custom_id", "unknown_custom_id")
-                if custom_id.startswith("gen_req_"):
-                    origin_id = "_".join(custom_id.split("_")[2:-1])
-                else:
-                    origin_id = custom_id
-                response = line_data.get("response")
-                error = line_data.get("error")
-                if error:
-                    errors_in_batch += 1
-                    logging.error(f"Erro batch {custom_id}: {error.get('message')}")
-                    continue
-                if not response or response.get("status_code") != 200:
-                    logging.warning(f"Request {custom_id} status não OK: {response}")
-                    errors_in_batch += 1
-                    continue
-                body = response.get("body", {})
-                choice = (body.get("choices") or [{}])[0]
-                message_content = choice.get("message", {}).get("content")
-                if not message_content:
-                    logging.warning(f"Resposta OK sem conteúdo {custom_id}")
-                    errors_in_batch += 1
-                    continue
-                content_cleaned = message_content.strip()
-                if content_cleaned.startswith("```json"):
-                    content_cleaned = content_cleaned[7:-3].strip()
-                elif content_cleaned.startswith("```"):
-                    content_cleaned = content_cleaned[3:-3].strip()
-                try:
-                    inner_data = json.loads(content_cleaned)
-                    if output_filename == pt.GENERATED_UCS_RAW:
-                        units = inner_data.get("generated_units", [])
-                        if isinstance(units, list) and len(units) == 6:
-                            for unit in units:
-                                if isinstance(unit, dict) and "bloom_level" in unit and "uc_text" in unit:
-                                    unit["uc_id"] = str(uuid.uuid4())
-                                    unit["origin_id"] = origin_id
-                                    processed_data.append(unit)
-                        else:
-                            logging.warning(f"JSON interno {custom_id} != 6 UCs")
-                            errors_in_batch += 1
-                    elif output_filename == pt.UC_EVALUATIONS_RAW:
-                        assessments = inner_data.get("difficulty_assessments", [])
-                        if isinstance(assessments, list):
-                            for assessment in assessments:
-                                if isinstance(assessment, dict) and 'uc_id' in assessment and 'difficulty_score' in assessment:
-                                    processed_data.append(assessment)
-                                else:
-                                    logging.warning(f"Formato assessment inválido para {custom_id}")
-                                    errors_in_batch += 1
-                        else:
-                            logging.warning(f"JSON interno {custom_id} sem lista 'difficulty_assessments'")
-                            errors_in_batch += 1
-                except json.JSONDecodeError as e:
-                    logging.error(f"Erro JSON decode interno {custom_id}: {e}")
-                    errors_in_batch += 1
-            except Exception as e:
-                logging.error(f"Erro processando linha: {e}. Linha: {line[:100]}...")
-                errors_in_batch += 1
-        logging.info(f"Processamento arquivo concluído. {len(processed_data)} registros. {errors_in_batch} erros.")
-        if processed_data:
-            df = pd.DataFrame(processed_data)
-            pt.save_dataframe(df, stage_output_dir, output_filename)
-            if errors_in_batch > 0:
-                logging.warning("Processamento concluído, mas com erros individuais no batch.")
-            all_ok = True
-        elif errors_in_batch > 0:
-            logging.error("Nenhum dado processado com sucesso do batch.")
-            all_ok = False
-        else:
-            logging.warning("Nenhum dado encontrado no arquivo de resultados do batch.")
-            all_ok = True
-    except Exception:
-        logging.exception(f"Falha ao baixar/processar arquivo {output_file_id} do batch {batch_id}.")
-        all_ok = False
-    return all_ok
+    # Seleciona o processor conforme o tipo de saída
+    if output_filename == pt.GENERATED_UCS_RAW:
+        processor = GenerationBatchProcessor(
+            batch_id, output_file_id, error_file_id, stage_output_dir, output_filename
+        )
+    elif output_filename == pt.UC_EVALUATIONS_RAW:
+        processor = DifficultyBatchProcessor(
+            batch_id, output_file_id, error_file_id, stage_output_dir, output_filename
+        )
+    else:
+        raise ValueError(f"process_batch_results: output_filename inválido '{output_filename}'")
+    return processor.process()
