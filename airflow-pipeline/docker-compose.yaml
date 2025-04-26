@@ -1,6 +1,4 @@
 # docker-compose.yaml
-version: '3.8'
-
 x-airflow-common: &airflow-common
   # Comente/Descomente a opção apropriada:
   # Opção 1: Usar a imagem customizada construída pelo Dockerfile
@@ -32,9 +30,14 @@ x-airflow-common: &airflow-common
     - ./logs:/opt/airflow/logs
     - ./plugins:/opt/airflow/plugins
     - ./scripts:/opt/airflow/scripts
-    - ./data:/opt/airflow/data # Para inputs e outputs do pipeline
-    # Monta os outputs do GraphRAG diretamente como inputs da pipeline
-    - ./graphrag_outputs:/opt/airflow/data/graphrag_outputs:ro
+    # Monta apenas subdiretórios de dados para pipeline
+    - ./data/input:/opt/airflow/data/input:ro
+    - ./data/output:/opt/airflow/data/output
+    # Arquivo .env e settings.yaml para configuração do Graphrag
+    - ./data/.env:/opt/airflow/data/.env:ro
+    - ./graphrag-settings.yaml:/opt/airflow/data/settings.yaml:ro
+    # Permite orquestrar containers Docker no BashOperator
+    - /var/run/docker.sock:/var/run/docker.sock
   depends_on:
     postgres:
       condition: service_healthy

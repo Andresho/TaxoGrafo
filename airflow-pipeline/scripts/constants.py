@@ -21,7 +21,8 @@ MIN_EVALUATIONS_PER_UC = int(os.environ.get('MIN_EVALUATIONS_PER_UC', 1)) # Simp
 
 # Diretórios (dentro do container Airflow)
 AIRFLOW_DATA_DIR = Path("/opt/airflow/data")
-BASE_INPUT_DIR = AIRFLOW_DATA_DIR / "graphrag_outputs"
+# O Graphrag escreve por padrão em 'output' (conforme settings.yaml)
+BASE_INPUT_DIR = AIRFLOW_DATA_DIR / "output"
 PIPELINE_WORK_DIR = AIRFLOW_DATA_DIR / "pipeline_workdir"
 BATCH_FILES_DIR = PIPELINE_WORK_DIR / "batch_files"
 stage1_dir = PIPELINE_WORK_DIR / "1_origins"

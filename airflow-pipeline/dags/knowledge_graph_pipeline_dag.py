@@ -4,7 +4,9 @@ from __future__ import annotations
 import pendulum
 
 from airflow.models.dag import DAG
+# Importa operadores usados
 from airflow.operators.python import PythonOperator
+from airflow.operators.bash import BashOperator
 # Para sensores reais da OpenAI Batch API (se disponíveis ou customizados)
 # from airflow.providers.openai.sensors.openai_batch import OpenAIBatchSensor
 
@@ -53,6 +55,12 @@ with DAG(
     """,
 ) as dag:
 
+    # Task 1: executa Graphrag index via CLI
+    graphrag_index = BashOperator(
+        task_id="graphrag_index",
+        bash_command="graphrag index --root /opt/airflow/data",
+    )
+    
     prepare_origins = PythonOperator(
         task_id="prepare_origins",
         python_callable=task_prepare_origins,
@@ -105,6 +113,7 @@ with DAG(
     )
 
     # Definindo as dependências
+    graphrag_index >> prepare_origins
     prepare_origins >> submit_generation >> wait_process_generation
     wait_process_generation >> define_rels
     define_rels >> submit_difficulty >> wait_process_difficulty
