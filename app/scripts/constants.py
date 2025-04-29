@@ -9,8 +9,21 @@ if MAX_ORIGINS_FOR_TESTING: MAX_ORIGINS_FOR_TESTING = int(MAX_ORIGINS_FOR_TESTIN
 
 BLOOM_ORDER = ["Lembrar", "Entender", "Aplicar", "Analisar", "Avaliar", "Criar"]
 BLOOM_ORDER_MAP = {level: i for i, level in enumerate(BLOOM_ORDER)}
-PROMPT_UC_GENERATION_FILE = Path("/opt/airflow/scripts/prompt_uc_generation.txt") # Caminho dentro do container
-PROMPT_UC_DIFFICULTY_FILE = Path("/opt/airflow/scripts/prompt_uc_difficulty.txt") # Caminho dentro do container
+import os
+# Localiza prompts no diretório do pacote 'scripts' ou via env var
+DEFAULT_PROMPT_DIR = Path(__file__).parent
+PROMPT_UC_GENERATION_FILE = Path(
+    os.environ.get(
+        'PROMPT_UC_GENERATION_FILE',
+        DEFAULT_PROMPT_DIR / 'prompt_uc_generation.txt'
+    )
+)
+PROMPT_UC_DIFFICULTY_FILE = Path(
+    os.environ.get(
+        'PROMPT_UC_DIFFICULTY_FILE',
+        DEFAULT_PROMPT_DIR / 'prompt_uc_difficulty.txt'
+    )
+)
 LLM_MODEL = os.environ.get('LLM_MODEL', "gpt-4o-mini")
 LLM_TEMPERATURE_GENERATION = float(os.environ.get('LLM_TEMPERATURE_GENERATION', 0.2))
 LLM_TEMPERATURE_DIFFICULTY = float(os.environ.get('LLM_TEMPERATURE_DIFFICULTY', 0.1))
@@ -19,12 +32,17 @@ MIN_EVALUATIONS_PER_UC = int(os.environ.get('MIN_EVALUATIONS_PER_UC', 1)) # Simp
 # BATCH API não usa concorrência configurável do nosso lado
 # UC_GENERATION_BATCH_SIZE = 20 # Não relevante para Batch API (tamanho do arquivo é o limite)
 
-# Diretórios (dentro do container Airflow)
-AIRFLOW_DATA_DIR = Path("/opt/airflow/data")
+"""
+Diretórios de dados via variável de ambiente ou padrão antigo.
+"""
+# Permite sobrescrever localização dos dados pela variável de ambiente
+AIRFLOW_DATA_DIR = Path(
+    os.environ.get('AIRFLOW_DATA_DIR', '/opt/airflow/data')
+)
 # O Graphrag escreve por padrão em 'output' (conforme settings.yaml)
-BASE_INPUT_DIR = AIRFLOW_DATA_DIR / "output"
-PIPELINE_WORK_DIR = AIRFLOW_DATA_DIR / "pipeline_workdir"
-BATCH_FILES_DIR = PIPELINE_WORK_DIR / "batch_files"
+BASE_INPUT_DIR = AIRFLOW_DATA_DIR / 'output'
+PIPELINE_WORK_DIR = AIRFLOW_DATA_DIR / 'pipeline_workdir'
+BATCH_FILES_DIR = PIPELINE_WORK_DIR / 'batch_files'
 stage1_dir = PIPELINE_WORK_DIR / "1_origins"
 stage2_output_ucs_dir = PIPELINE_WORK_DIR / "2_generated_ucs"
 stage3_dir = PIPELINE_WORK_DIR / "3_relationships"

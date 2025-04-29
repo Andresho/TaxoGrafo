@@ -1,13 +1,12 @@
 # docker-compose.yaml
 x-airflow-common: &airflow-common
-  # Comente/Descomente a opção apropriada:
-  # Opção 1: Usar a imagem customizada construída pelo Dockerfile
-  image: minha-imagem-airflow-customizada:latest # Certifique-se que esta tag existe (docker build -t ...)
-  # Opção 2: Construir diretamente (se preferir)
-  # build:
-  #  context: .
-  #  dockerfile: Dockerfile
-  # Opção 3: Usar imagem oficial (instalará dependências no primeiro 'up', pode ser lento)
+  # Imagem do Airflow: construir localmente via Dockerfile em airflow-pipeline/Dockerfile
+  build:
+    context: ./airflow-pipeline
+    dockerfile: Dockerfile
+  # Se preferir usar imagem customizada já construída, descomente e ajuste:
+  # image: minha-imagem-airflow-customizada:latest
+  # Ou use imagem oficial (instalará dependências no primeiro 'up', pode ser lento):
   # image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:2.8.4-python3.9}
 
   env_file:
@@ -22,20 +21,21 @@ x-airflow-common: &airflow-common
     # Configs Celery (Se usar CeleryExecutor)
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+    # Conexão para a API de Pipeline
+    AIRFLOW_CONN_PIPELINE_API: http://pipeline-api:8000
     # Adicione outras configurações do Airflow aqui se necessário
     # Ex: AIRFLOW__WEBSERVER__SECRET_KEY: "uma_chave_secreta_super_segura" # Gere uma chave aleatória
   volumes:
     # Monta diretórios locais para dentro do container
-    - ./dags:/opt/airflow/dags
-    - ./logs:/opt/airflow/logs
-    - ./plugins:/opt/airflow/plugins
-    - ./scripts:/opt/airflow/scripts
+    - ./airflow-pipeline/dags:/opt/airflow/dags
+    - ./airflow-pipeline/logs:/opt/airflow/logs
+    - ./airflow-pipeline/plugins:/opt/airflow/plugins
     # Monta apenas subdiretórios de dados para pipeline
-    - ./data/input:/opt/airflow/data/input:ro
-    - ./data/output:/opt/airflow/data/output
+    - ./airflow-pipeline/data/input:/opt/airflow/data/input:ro
+    - ./airflow-pipeline/data/output:/opt/airflow/data/output
     # Arquivo .env e settings.yaml para configuração do Graphrag
-    - ./data/.env:/opt/airflow/data/.env:ro
-    - ./graphrag-settings.yaml:/opt/airflow/data/settings.yaml:ro
+    - ./airflow-pipeline/data/.env:/opt/airflow/data/.env:ro
+    - ./airflow-pipeline/graphrag-settings.yaml:/opt/airflow/data/settings.yaml:ro
     # Permite orquestrar containers Docker no BashOperator
     - /var/run/docker.sock:/var/run/docker.sock
   depends_on:
@@ -43,6 +43,9 @@ x-airflow-common: &airflow-common
       condition: service_healthy
     redis:
       condition: service_healthy # Necessário apenas para CeleryExecutor
+  # Garante que Airflow possa resolver o endpoint da API de pipeline
+  links:
+    - pipeline-api
   user: "${AIRFLOW_UID:-50000}" # Garante permissões corretas nos volumes montados
 
 services:
@@ -127,6 +130,23 @@ services:
        airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin || true'
     # Não precisa de restart, é um job one-off
     # depends_on já está no x-airflow-common
+
+  pipeline-api:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    container_name: pipeline-api
+    env_file:
+      - .env
+    environment:
+      # Aponta para os dados montados via volume
+      - AIRFLOW_DATA_DIR=/app/data
+    ports:
+      - "8000:8000"
+    volumes:
+      # Monta toda a pasta de dados da pipeline
+      - ./airflow-pipeline/data:/app/data
+    restart: always
 
 volumes:
   airflow-pg-data:

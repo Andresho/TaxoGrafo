@@ -5,41 +5,11 @@ import pendulum
 
 from airflow.models.dag import DAG
 # Importa operadores usados
-from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
-# Para sensores reais da OpenAI Batch API (se disponíveis ou customizados)
-# from airflow.providers.openai.sensors.openai_batch import OpenAIBatchSensor
+# Usaremos operadores HTTP em vez de PythonOperator para chamar nossa API
+from airflow.providers.http.operators.http import SimpleHttpOperator
+from airflow.providers.http.sensors.http import HttpSensor
 
-# Importa as funções de tarefa do nosso script
-# O Airflow adiciona o diretório 'dags' e 'scripts' ao PYTHONPATH se estiverem na estrutura correta
-# ou podemos ajustar o sys.path se necessário
-try:
-    from scripts.pipeline_tasks import (
-        task_prepare_origins,
-        task_submit_uc_generation_batch,
-        task_wait_and_process_batch,
-        task_define_relationships,
-        task_submit_difficulty_batch,
-        task_finalize_outputs,
-        stage2_output_ucs_dir,
-        stage4_output_eval_dir,
-    )
-except ImportError:
-    # Abordagem alternativa se a importação direta falhar
-    import sys
-    from pathlib import Path
-    # Adiciona diretório pai de 'dags' ao path (onde 'scripts' deve estar)
-    sys.path.append(str(Path(__file__).parent.parent))
-    from scripts.pipeline_tasks import (
-        task_prepare_origins,
-        task_submit_uc_generation_batch,
-        task_wait_and_process_batch,
-        task_define_relationships,
-        task_submit_difficulty_batch,
-        task_finalize_outputs,
-        stage2_output_ucs_dir,
-        stage4_output_eval_dir,
-    )
 
 
 with DAG(
@@ -60,61 +30,108 @@ with DAG(
         task_id="graphrag_index",
         bash_command="graphrag index --root /opt/airflow/data",
     )
-    
-    prepare_origins = PythonOperator(
+
+    # 2: Prepara origens via API
+    prepare_origins = SimpleHttpOperator(
         task_id="prepare_origins",
-        python_callable=task_prepare_origins,
-        # provide_context=True # padrão no Airflow 2+
+        http_conn_id="pipeline_api",
+        method="POST",
+        endpoint="/pipeline/prepare-origins",
+        headers={"Content-Type": "application/json"},
+        do_xcom_push=False,
     )
 
-    submit_generation = PythonOperator(
+    # 3: Submete batch de geração UC e armazena batch_id em XCom
+    submit_generation = SimpleHttpOperator(
         task_id="submit_generation_batch",
-        python_callable=task_submit_uc_generation_batch,
+        http_conn_id="pipeline_api",
+        method="POST",
+        endpoint="/pipeline/submit-uc-generation-batch",
+        headers={"Content-Type": "application/json"},
+        response_filter=lambda response: response.json().get("batch_id"),
+        do_xcom_push=True,
     )
 
-    # Usando nossa função combinada de wait/process
-    # Passamos um ID chave para diferenciar os batches
-    wait_process_generation = PythonOperator(
-        task_id="wait_process_generation_results",
-        python_callable=task_wait_and_process_batch,
-        op_kwargs={
-            'batch_id_key': 'generation',  # Key para buscar o ID do batch submetido via XCom
-            'output_dir': stage2_output_ucs_dir,
-            'output_filename': 'generated_ucs_raw'
-        },
-        trigger_rule='all_success', # Só roda se a submissão foi ok (e retornou ID)
+    # 4: Aguarda término da batch de geração UC
+    wait_generation = HttpSensor(
+        task_id="wait_generation_batch",
+        http_conn_id="pipeline_api",
+        method="GET",
+        endpoint="/pipeline/batch-status/{{ ti.xcom_pull(task_ids='submit_generation_batch') }}",
+        request_params={},
+        response_check=lambda response: response.json().get("status") == "completed",
+        poke_interval=60,
+        timeout=3600,
+        mode="reschedule",
     )
 
-    define_rels = PythonOperator(
+    # 5: Processa resultados da geração UC
+    process_generation = SimpleHttpOperator(
+        task_id="process_generation_batch",
+        http_conn_id="pipeline_api",
+        method="POST",
+        endpoint="/pipeline/process-uc-generation-batch/{{ ti.xcom_pull(task_ids='submit_generation_batch') }}",
+        headers={"Content-Type": "application/json"},
+        do_xcom_push=False,
+    )
+
+    # 6: Define relacionamentos via API
+    define_rels = SimpleHttpOperator(
         task_id="define_relationships",
-        python_callable=task_define_relationships,
+        http_conn_id="pipeline_api",
+        method="POST",
+        endpoint="/pipeline/define-relationships",
+        headers={"Content-Type": "application/json"},
+        do_xcom_push=False,
     )
 
-    submit_difficulty = PythonOperator(
+    # 7: Submete batch de avaliação de dificuldade e armazena batch_id em XCom
+    submit_difficulty = SimpleHttpOperator(
         task_id="submit_difficulty_batch",
-        python_callable=task_submit_difficulty_batch,
+        http_conn_id="pipeline_api",
+        method="POST",
+        endpoint="/pipeline/submit-difficulty-batch",
+        headers={"Content-Type": "application/json"},
+        response_filter=lambda response: response.json().get("batch_id"),
+        do_xcom_push=True,
     )
 
-    wait_process_difficulty = PythonOperator(
-        task_id="wait_process_difficulty_results",
-        python_callable=task_wait_and_process_batch,  # Reutiliza a função de wait
-        op_kwargs={
-            'batch_id_key': 'difficulty',  # Key para buscar o ID do batch de dificuldade via XCom
-            'output_dir': stage4_output_eval_dir,
-            # Salva avaliações brutas aqui para cálculo final na próxima etapa
-            'output_filename': 'uc_evaluations_aggregated_raw'
-        },
-        trigger_rule='all_success',
+    # 8: Aguarda término da batch de avaliação de dificuldade
+    wait_difficulty = HttpSensor(
+        task_id="wait_difficulty_batch",
+        http_conn_id="pipeline_api",
+        method="GET",
+        endpoint="/pipeline/batch-status/{{ ti.xcom_pull(task_ids='submit_difficulty_batch') }}",
+        request_params={},
+        response_check=lambda response: response.json().get("status") == "completed",
+        poke_interval=60,
+        timeout=3600,
+        mode="reschedule",
     )
 
-    finalize = PythonOperator(
+    # 9: Processa resultados de dificuldade
+    process_difficulty = SimpleHttpOperator(
+        task_id="process_difficulty_batch",
+        http_conn_id="pipeline_api",
+        method="POST",
+        endpoint="/pipeline/process-difficulty-batch/{{ ti.xcom_pull(task_ids='submit_difficulty_batch') }}",
+        headers={"Content-Type": "application/json"},
+        do_xcom_push=False,
+    )
+
+    # 10: Finaliza outputs via API
+    finalize = SimpleHttpOperator(
         task_id="finalize_outputs",
-        python_callable=task_finalize_outputs,
+        http_conn_id="pipeline_api",
+        method="POST",
+        endpoint="/pipeline/finalize-outputs",
+        headers={"Content-Type": "application/json"},
+        do_xcom_push=False,
     )
 
     # Definindo as dependências
     graphrag_index >> prepare_origins
-    prepare_origins >> submit_generation >> wait_process_generation
-    wait_process_generation >> define_rels
-    define_rels >> submit_difficulty >> wait_process_difficulty
-    wait_process_difficulty >> finalize
+    prepare_origins >> submit_generation >> wait_generation >> process_generation
+    process_generation >> define_rels
+    define_rels >> submit_difficulty >> wait_difficulty >> process_difficulty
+    process_difficulty >> finalize

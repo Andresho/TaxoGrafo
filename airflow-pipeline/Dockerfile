@@ -43,9 +43,6 @@ RUN python -m pip install --no-cache-dir --user /opt/airflow/graphrag
 # Revert to root for any subsequent operations
 USER root
 
-# Copia os scripts e DAGs (como root, mas definindo o dono correto)
-# Assume que prompts estão dentro de scripts/
-COPY --chown=${AIRFLOW_UID}:${AIRFLOW_GID} scripts/ /opt/airflow/scripts/
 COPY --chown=${AIRFLOW_UID}:${AIRFLOW_GID} dags/ /opt/airflow/dags/
 # Initialize GraphRag project skeleton (generates .env, prompts, default settings.yaml)
 USER ${AIRFLOW_UID}
