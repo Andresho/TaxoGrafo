@@ -56,6 +56,16 @@ from scripts.constants import (
     FINAL_REL_FILE,
 )
 
+# Ingest Graphrag output Parquet files into the database
+# Use a DB session and CRUD modules for each output table
+from db import get_session
+import crud.graphrag_communities as crud_graphrag_communities
+import crud.graphrag_community_reports as crud_graphrag_community_reports
+import crud.graphrag_documents as crud_graphrag_documents
+import crud.graphrag_entities as crud_graphrag_entities
+import crud.graphrag_relationships as crud_graphrag_relationships
+import crud.graphrag_text_units as crud_graphrag_text_units
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -94,7 +104,31 @@ def task_prepare_origins(run_id: str, **context):
         if not origins:
             logging.warning("Nenhuma origem preparada.")
             origins = []
-        save_dataframe(pd.DataFrame(origins), s1, "uc_origins")
+        df_origins = pd.DataFrame(origins)
+        save_dataframe(df_origins, s1, "uc_origins")
+
+        # Base output directory for this run
+        base_input, *_ = _get_dirs(run_id)
+        output_dir = base_input
+        # Map table names to CRUD functions
+        table_crud_map = {
+            'communities': crud_graphrag_communities.add_communities,
+            'community_reports': crud_graphrag_community_reports.add_community_reports,
+            'documents': crud_graphrag_documents.add_documents,
+            'entities': crud_graphrag_entities.add_entities,
+            'relationships': crud_graphrag_relationships.add_relationships,
+            'text_units': crud_graphrag_text_units.add_text_units,
+        }
+        with get_session() as db:
+            for table_name, add_func in table_crud_map.items():
+                parquet_path = output_dir / f"{table_name}.parquet"
+                if parquet_path.is_file():
+                    try:
+                        df = pd.read_parquet(parquet_path)
+                        records = df.to_dict('records')
+                        add_func(db, run_id, records)
+                    except Exception:
+                        logging.exception(f"Falha ao ingestar '{table_name}' para run_id={run_id}")
     except Exception:
         logging.exception("Falha na task_prepare_origins")
         raise
