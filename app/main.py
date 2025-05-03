@@ -8,6 +8,8 @@ import scripts.batch_utils as batch_utils
 
 import os
 from pathlib import Path
+import shutil
+import requests
 
 app = FastAPI(
     title="Airflow Pipeline API",
@@ -103,6 +105,56 @@ def finalize_outputs(run_id: str):
     try:
         pt.task_finalize_outputs(run_id)
         return {"status": "success", "run_id": run_id, "message": "Final outputs saved"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+        
+@app.post("/pipeline/{run_id}/init", tags=["pipeline"])
+def init_pipeline(run_id: str):
+    """Endpoint para inicializar pipeline e disparar o DAG no Airflow.
+    - Cria pasta de execução e copia dados iniciais (idempotente).
+    - Dispara um DagRun com dag_run_id == run_id e conf.pipeline_id == run_id.
+    """
+    # Define diretórios locais e variáveis de conexão Airflow
+    base_dir = Path(os.getenv("AIRFLOW_DATA_DIR", "./data"))
+    run_dir = base_dir / run_id
+    airflow_api_url = os.getenv("AIRFLOW_API_URL", "http://airflow-webserver:8080")
+    dag_id = os.getenv("AIRFLOW_DAG_ID", "knowledge_graph_pipeline")
+    airflow_user = os.getenv("AIRFLOW_API_USER", "admin")
+    airflow_pass = os.getenv("AIRFLOW_API_PASSWORD", "admin")
+    created = False
+    try:
+        # Se não existe, cria a estrutura e copia settings e input
+        if not run_dir.exists():
+            run_dir.mkdir(parents=True, exist_ok=False)
+            src_settings = base_dir / "settings.yaml"
+            dst_settings = run_dir / "settings.yaml"
+            if not src_settings.exists():
+                raise HTTPException(status_code=500, detail="settings.yaml not found in base data dir")
+            shutil.copy(src_settings, dst_settings)
+            src_input = base_dir / "input"
+            dst_input = run_dir / "input"
+            if not src_input.exists():
+                raise HTTPException(status_code=500, detail="input directory not found in base data dir")
+            shutil.copytree(src_input, dst_input)
+            created = True
+        # Dispara o DAG no Airflow via API
+        trigger_url = f"{airflow_api_url}/api/v1/dags/{dag_id}/dagRuns"
+        payload = {"dag_run_id": run_id, "conf": {"pipeline_id": run_id}}
+        resp = requests.post(
+            trigger_url,
+            json=payload,
+            auth=(airflow_user, airflow_pass),
+            timeout=10,
+        )
+        if resp.status_code not in (200, 201):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to trigger DAG {dag_id}: {resp.status_code} {resp.text}"
+            )
+        return {"status": "success", "run_id": run_id, "created": created, "dag_response": resp.json()}
+    except HTTPException:
+        # Propaga erros controlados
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

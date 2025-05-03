@@ -4,3 +4,4 @@ pandas
 python-dotenv
 openai>=1.0
 pyarrow
+requests>=2.0.0

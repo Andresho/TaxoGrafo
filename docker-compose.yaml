@@ -11,6 +11,8 @@ x-airflow-common: &airflow-common
     &airflow-common-env
     # Configs Core Airflow
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    # Novos DAGs não ficam pausados por padrão
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'false'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     # Configs de Banco de Dados
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
@@ -19,6 +21,11 @@ x-airflow-common: &airflow-common
     AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
     # Conexão para a API de Pipeline
     AIRFLOW_CONN_PIPELINE_API: http://pipeline-api:8000
+    # Habilita Basic Auth para a REST API do Airflow
+    AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth"
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: '30'
+    AIRFLOW__SCHEDULER__JOB_HEARTBEAT_SEC: '30'
+    AIRFLOW__SCHEDULER__SCHEDULER_HEARTBEAT_SEC: '30'
   volumes:
     - ./airflow-pipeline/dags:/opt/airflow/dags
     - ./airflow-pipeline/logs:/opt/airflow/logs
@@ -90,14 +97,10 @@ services:
       retries: 5
     restart: always
 
-  airflow-worker: # Necessário apenas para CeleryExecutor
+  airflow-worker:
     <<: *airflow-common
     container_name: airflow-worker
     command: celery worker # Comando padrão para iniciar um worker celery
-    # Ajuste a concorrência se necessário
-    # environment:
-    #   <<: *airflow-common-env # Herda env vars
-    #   CELERY_CONCURRENCY: 4
     healthcheck:
       test: ["CMD-SHELL", 'airflow jobs check --job-type WorkerJob --hostname "$${HOSTNAME}"']
       interval: 10s
