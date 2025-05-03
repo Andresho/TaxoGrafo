@@ -5,6 +5,8 @@ from fastapi import FastAPI, HTTPException
 
 import scripts.pipeline_tasks as pt
 import scripts.batch_utils as batch_utils
+from db import SessionLocal, get_session
+import crud.pipeline_run as crud_runs
 
 import os
 from pathlib import Path
@@ -104,6 +106,9 @@ def finalize_outputs(run_id: str):
     """Endpoint para executar task_finalize_outputs em contexto de run_id."""
     try:
         pt.task_finalize_outputs(run_id)
+        # Update pipeline run status to 'success'
+        with get_session() as db:
+            crud_runs.update_run_status(db, run_id, status='success')
         return {"status": "success", "run_id": run_id, "message": "Final outputs saved"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -122,6 +127,9 @@ def init_pipeline(run_id: str):
     airflow_user = os.getenv("AIRFLOW_API_USER", "admin")
     airflow_pass = os.getenv("AIRFLOW_API_PASSWORD", "admin")
     created = False
+    # Register the pipeline run in the database
+    with get_session() as db:
+        crud_runs.create_run(db, run_id, trigger_source='api')
     try:
         # Se não existe, cria a estrutura e copia settings e input
         if not run_dir.exists():
