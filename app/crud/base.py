@@ -23,8 +23,9 @@ def add_records(db: Session, model: Type, run_id: str, records: list) -> None:
         rec['pipeline_run_id'] = run_id
     # Build INSERT ... ON CONFLICT DO NOTHING statement
     stmt = pg_insert(model.__table__).values(records)
-    # Assume primary key column is 'id'
-    stmt = stmt.on_conflict_do_nothing(index_elements=['id'])
+    # Determine primary key columns for conflict handling (supports composite keys)
+    pk_cols = [col.name for col in model.__table__.primary_key.columns]
+    stmt = stmt.on_conflict_do_nothing(index_elements=pk_cols)
     # Execute and commit
     db.execute(stmt)
     db.commit()

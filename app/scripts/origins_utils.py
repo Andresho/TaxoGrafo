@@ -53,7 +53,8 @@ def prepare_uc_origins(
                     "context": r.description if pd.notna(r.description) else "",
                     "frequency": freq,
                     "degree": deg,
-                    "entity_type": entity_type
+                    "entity_type": entity_type,
+                    "level": 0
                 })
         else:
             missing = [c for c in req_cols if c not in entities_df.columns]
@@ -69,7 +70,9 @@ def prepare_uc_origins(
                     "origin_type": "community_report",
                     "title": r.title,
                     "context": r.summary if pd.notna(r.summary) else "",
-                    "community_human_id": r.community,
+                    "frequency": 0,
+                    "degree": 0,
+                    "entity_type": "community",
                     "level": level
                 })
         else:

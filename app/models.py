@@ -101,3 +101,17 @@ class GraphragTextUnit(Base):
     entity_ids = Column(JSON)
     relationship_ids = Column(JSON)
     covariate_ids = Column(JSON)
+    # ------------------------
+    # UC origins table
+    # ------------------------
+class KnowledgeUnitOrigin(Base):
+    __tablename__ = 'knowledge_unit_origins'
+    pipeline_run_id = Column(String, ForeignKey('pipeline_runs.run_id', ondelete='CASCADE'), primary_key=True)
+    origin_id = Column(String, primary_key=True)
+    origin_type = Column(String, nullable=False)
+    title = Column(Text, nullable=False)
+    context = Column(Text)
+    frequency = Column(Integer)
+    degree = Column(Integer)
+    entity_type = Column(String)
+    level = Column(Integer)

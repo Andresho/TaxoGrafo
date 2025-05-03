@@ -65,6 +65,7 @@ import crud.graphrag_documents as crud_graphrag_documents
 import crud.graphrag_entities as crud_graphrag_entities
 import crud.graphrag_relationships as crud_graphrag_relationships
 import crud.graphrag_text_units as crud_graphrag_text_units
+import crud.knowledge_unit_origins as crud_knowledge_unit_origins
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -104,8 +105,8 @@ def task_prepare_origins(run_id: str, **context):
         if not origins:
             logging.warning("Nenhuma origem preparada.")
             origins = []
-        df_origins = pd.DataFrame(origins)
-        save_dataframe(df_origins, s1, "uc_origins")
+        with get_session() as db:
+            crud_knowledge_unit_origins.add_knowledge_unit_origins(db, run_id, origins)
 
         # Base output directory for this run
         base_input, *_ = _get_dirs(run_id)
@@ -139,13 +140,12 @@ def task_submit_uc_generation_batch(run_id: str, **context):
     llm = get_llm_strategy()
     batch_job_id = None
     try:
-        _, s1, *_ = _get_dirs(run_id)
-        origins_df = load_dataframe(s1, "uc_origins")
-        if origins_df is None or origins_df.empty:
+        with get_session() as db:
+            records = crud_knowledge_unit_origins.get_knowledge_unit_origins(db, run_id)
+        if not records:
             logging.warning("Nenhuma origem para gerar UCs. Pulando submissão.")
             return None
-
-        all_origins = origins_df.to_dict('records')
+        all_origins = records
         # Seleção de origens via Strategy Pattern
         if MAX_ORIGINS_FOR_TESTING is not None and MAX_ORIGINS_FOR_TESTING > 0:
             selector = HubNeighborSelector(MAX_ORIGINS_FOR_TESTING, BASE_INPUT_DIR)
