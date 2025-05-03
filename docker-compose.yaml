@@ -4,49 +4,36 @@ x-airflow-common: &airflow-common
   build:
     context: ./airflow-pipeline
     dockerfile: Dockerfile
-  # Se preferir usar imagem customizada já construída, descomente e ajuste:
-  # image: minha-imagem-airflow-customizada:latest
-  # Ou use imagem oficial (instalará dependências no primeiro 'up', pode ser lento):
-  # image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:2.8.4-python3.9}
 
   env_file:
     - .env # Carrega variáveis de ambiente como OPENAI_API_KEY e AIRFLOW_UID
   environment:
     &airflow-common-env
     # Configs Core Airflow
-    AIRFLOW__CORE__EXECUTOR: CeleryExecutor # Ou LocalExecutor para testes mais simples
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    # Configs de Banco de Dados (Usar seção [database] preferencialmente)
+    # Configs de Banco de Dados
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-    # Configs Celery (Se usar CeleryExecutor)
+    # Configs Celery
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
     # Conexão para a API de Pipeline
     AIRFLOW_CONN_PIPELINE_API: http://pipeline-api:8000
-    # Adicione outras configurações do Airflow aqui se necessário
-    # Ex: AIRFLOW__WEBSERVER__SECRET_KEY: "uma_chave_secreta_super_segura" # Gere uma chave aleatória
   volumes:
-    # Monta diretórios locais para dentro do container
     - ./airflow-pipeline/dags:/opt/airflow/dags
     - ./airflow-pipeline/logs:/opt/airflow/logs
     - ./airflow-pipeline/plugins:/opt/airflow/plugins
-    # Monta apenas subdiretórios de dados para pipeline
-    - ./airflow-pipeline/data/input:/opt/airflow/data/input:ro
-    - ./airflow-pipeline/data/output:/opt/airflow/data/output
-    # Arquivo .env e settings.yaml para configuração do Graphrag
-    - ./airflow-pipeline/data/.env:/opt/airflow/data/.env:ro
-    - ./airflow-pipeline/graphrag-settings.yaml:/opt/airflow/data/settings.yaml:ro
+    - pipeline_data:/opt/airflow/data
     # Permite orquestrar containers Docker no BashOperator
     - /var/run/docker.sock:/var/run/docker.sock
   depends_on:
     postgres:
       condition: service_healthy
     redis:
-      condition: service_healthy # Necessário apenas para CeleryExecutor
-  # Garante que Airflow possa resolver o endpoint da API de pipeline
+      condition: service_healthy
   links:
     - pipeline-api
-  user: "${AIRFLOW_UID:-50000}" # Garante permissões corretas nos volumes montados
+  user: root
 
 services:
   postgres:
@@ -57,7 +44,7 @@ services:
       - POSTGRES_PASSWORD=airflow
       - POSTGRES_DB=airflow
     ports:
-      - "5434:5432" # Mapeia para 5434 localmente
+      - "5434:5432"
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 5s
@@ -82,12 +69,12 @@ services:
   airflow-webserver:
     <<: *airflow-common
     container_name: airflow-webserver
-    command: webserver # Comando padrão para iniciar o webserver
+    command: webserver
     ports:
       - "8080:8080"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
-      interval: 30s # Aumenta intervalo para dar tempo de iniciar
+      interval: 30s
       timeout: 10s
       retries: 5
     restart: always
@@ -95,7 +82,7 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     container_name: airflow-scheduler
-    command: scheduler # Comando padrão para iniciar o scheduler
+    command: scheduler
     healthcheck:
       test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
       interval: 10s
@@ -121,15 +108,10 @@ services:
   airflow-init:
     <<: *airflow-common
     container_name: airflow-init
-    # REMOVIDO: entrypoint: /bin/bash # Usa entrypoint padrão da imagem!
-    # Comando para inicializar o DB e criar usuário (ou apenas garantir que existem)
-    # || true no final evita falha se já inicializado/usuário existe
     command: >
       bash -c
       'airflow db init;
        airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin || true'
-    # Não precisa de restart, é um job one-off
-    # depends_on já está no x-airflow-common
 
   pipeline-api:
     build:
@@ -139,15 +121,31 @@ services:
     env_file:
       - .env
     environment:
-      # Aponta para os dados montados via volume
       - AIRFLOW_DATA_DIR=/app/data
     ports:
       - "8000:8000"
     volumes:
-      # Monta toda a pasta de dados da pipeline
-      - ./airflow-pipeline/data:/app/data
+      # Usa volume nomeado compartilhado
+      - pipeline_data:/app/data
     restart: always
 
+  graphrag:
+    build:
+      context: .
+      dockerfile: Dockerfile.graphrag
+    image: graphrag:latest
+    volumes:
+      - pipeline_data:/data
+    # Mantém o container vivo para debug; no DAG usaremos DockerOperator para rodar comandos
+    entrypoint: ["sleep", "infinity"]
+
 volumes:
+  pipeline_data:
+    name: pipeline_data
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./airflow-pipeline/data
   airflow-pg-data:
   airflow-redis-data:

@@ -56,11 +56,24 @@ from scripts.constants import (
     FINAL_REL_FILE,
 )
 
-# --- Configurações Globais ---
-# Carrega variáveis de ambiente ANTES de usá-las
 load_dotenv()
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# --- Helpers de Diretórios por run_id ---
+def _get_dirs(run_id: str):
+    """Retorna tupla de paths: base_input, stage1..5 e batch_dir conforme run_id ou valores padrão."""
+    # Base de dados (concatena run_id se fornecido)
+    root = Path(AIRFLOW_DATA_DIR) / run_id
+    base_input = root / 'output'
+    work_dir = root / 'pipeline_workdir'
+    batch_dir = work_dir / 'batch_files'
+    s1 = work_dir / '1_origins'
+    s2 = work_dir / '2_generated_ucs'
+    s3 = work_dir / '3_relationships'
+    s4 = work_dir / '4_difficulty_evals'
+    s5 = work_dir / '5_final_outputs'
+
+    return base_input, s1, s2, s3, s4, s5, batch_dir
 
 DEFAULT_OUTPUT_COLUMNS = {
     GENERATED_UCS_RAW: ["uc_id", "origin_id", "bloom_level", "uc_text"],
@@ -68,31 +81,32 @@ DEFAULT_OUTPUT_COLUMNS = {
 }
 
 # --- Funções de Tarefa do DAG ---
-def task_prepare_origins(**context):
-    """Tarefa 1: Prepara e salva uc_origins.parquet."""
-    logging.info("--- TASK: prepare_origins ---")
+def task_prepare_origins(run_id: str, **context):
+    """Tarefa 1: Prepara e salva uc_origins.parquet para um run_id (ou padrão)."""
+    logging.info(f"--- TASK: prepare_origins (run_id={run_id}) ---")
     try:
-        entities_df = load_dataframe(BASE_INPUT_DIR, "entities")
-        reports_df = load_dataframe(BASE_INPUT_DIR, "community_reports")
+        base_input, s1, *_ = _get_dirs(run_id)
+        entities_df = load_dataframe(base_input, "entities")
+        reports_df = load_dataframe(base_input, "community_reports")
         if entities_df is None and reports_df is None:
             raise ValueError("Inputs entities/reports não carregados")
         origins = prepare_uc_origins(entities_df, reports_df)
         if not origins:
             logging.warning("Nenhuma origem preparada.")
-            origins = [] # Garante lista vazia
-        save_dataframe(pd.DataFrame(origins), stage1_dir, "uc_origins")
-    except Exception as e:
+            origins = []
+        save_dataframe(pd.DataFrame(origins), s1, "uc_origins")
+    except Exception:
         logging.exception("Falha na task_prepare_origins")
         raise
 
-def task_submit_uc_generation_batch(**context):
-    """Tarefa 2: Prepara JSONL e submete batch de geração UC."""
-    logging.info("--- TASK: submit_uc_generation_batch ---")
-    # Garante que o LLM strategy está configurado
+def task_submit_uc_generation_batch(run_id: str, **context):
+    """Tarefa 2: Prepara JSONL e submete batch de geração UC para um run_id."""
+    logging.info(f"--- TASK: submit_uc_generation_batch (run_id={run_id}) ---")
     llm = get_llm_strategy()
     batch_job_id = None
     try:
-        origins_df = load_dataframe(stage1_dir, "uc_origins")
+        _, s1, *_ = _get_dirs(run_id)
+        origins_df = load_dataframe(s1, "uc_origins")
         if origins_df is None or origins_df.empty:
             logging.warning("Nenhuma origem para gerar UCs. Pulando submissão.")
             return None
@@ -113,10 +127,11 @@ def task_submit_uc_generation_batch(**context):
         except Exception as e: raise ValueError(f"Erro lendo prompt UC Gen: {e}")
 
         # Prepara registros de batch e salva como JSONL via DataLake
-        BATCH_FILES_DIR.mkdir(parents=True, exist_ok=True)
+        _, _, _, _, _, _, batch_dir = _get_dirs(run_id)
+        batch_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         batch_input_filename = f"uc_generation_batch_{timestamp}.jsonl"
-        batch_input_path = BATCH_FILES_DIR / batch_input_filename
+        batch_input_path = batch_dir / batch_input_filename
         records = []
         for i, origin in enumerate(origins_to_process):
             origin_id = origin.get("origin_id")
@@ -200,16 +215,17 @@ def task_wait_and_process_batch_generic(batch_id_key: str, output_dir: Path, out
 task_wait_and_process_batch = task_wait_and_process_batch_generic
 
 
-def task_define_relationships(**context):
-    """Tarefa: Define relações REQUIRES e EXPANDS usando Builders."""
-    logging.info("--- TASK: define_relationships ---")
+def task_define_relationships(run_id: str, **context):
+    """Tarefa: Define relações REQUIRES e EXPANDS usando Builders para um run_id."""
+    logging.info(f"--- TASK: define_relationships (run_id={run_id}) ---")
     try:
+        _, _, s2, s3, *_ = _get_dirs(run_id)
         # Carrega UCs geradas
-        generated_df = load_dataframe(stage2_output_ucs_dir, GENERATED_UCS_RAW)
+        generated_df = load_dataframe(s2, GENERATED_UCS_RAW)
         if generated_df is None or generated_df.empty:
             logging.warning("Nenhuma UC para definir relações.")
             # Salva DataFrame vazio com colunas mínimas
-            save_dataframe(pd.DataFrame(columns=["source", "target", "type"]), stage3_dir, REL_INTERMEDIATE)
+            save_dataframe(pd.DataFrame(columns=["source", "target", "type"]), s3, REL_INTERMEDIATE)
             return
         generated_ucs = generated_df.to_dict('records')
         # Carrega dados para EXPANDS
@@ -227,33 +243,34 @@ def task_define_relationships(**context):
         all_rels = builder.build([], ctx)
         # Salva resultados
         if all_rels:
-            save_dataframe(pd.DataFrame(all_rels), stage3_dir, REL_INTERMEDIATE)
+            save_dataframe(pd.DataFrame(all_rels), s3, REL_INTERMEDIATE)
         else:
             logging.warning("Nenhuma relação definida.")
-            save_dataframe(pd.DataFrame(columns=["source", "target", "type"]), stage3_dir, REL_INTERMEDIATE)
+            save_dataframe(pd.DataFrame(columns=["source", "target", "type"]), s3, REL_INTERMEDIATE)
     except Exception:
         logging.exception("Falha na task_define_relationships")
         raise
 
-def task_submit_difficulty_batch(**context):
-    """Tarefa: Prepara e submete batch de avaliação de dificuldade (1 passada)."""
+def task_submit_difficulty_batch(run_id: str, **context):
+    """Tarefa: Prepara e submete batch de avaliação de dificuldade para um run_id."""
     # ... (lógica como antes, lendo de stage2_output_ucs_dir) ...
     logging.info("--- TASK: submit_difficulty_batch ---")
     # Garante que o LLM strategy está configurado
     llm = get_llm_strategy()
     batch_job_id = None
     try:
-        generated_ucs_df = load_dataframe(stage2_output_ucs_dir, "generated_ucs_raw")
+        _, _, s2, _, s4, _, batch_dir = _get_dirs(run_id)
+        generated_ucs_df = load_dataframe(s2, "generated_ucs_raw")
         if generated_ucs_df is None or generated_ucs_df.empty: logging.warning("Nenhuma UC para avaliar."); return None
         generated_ucs = generated_ucs_df.to_dict('records')
         try:
             with open(PROMPT_UC_DIFFICULTY_FILE, 'r', encoding='utf-8') as f: prompt_template = f.read()
         except Exception as e: raise ValueError(f"Erro lendo prompt diff: {e}")
         # Prepara registros de batch de dificuldade e salva JSONL via DataLake
-        BATCH_FILES_DIR.mkdir(parents=True, exist_ok=True)
+        batch_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         batch_input_filename = f"uc_difficulty_batch_{timestamp}.jsonl"
-        batch_input_path = BATCH_FILES_DIR / batch_input_filename
+        batch_input_path = batch_dir / batch_input_filename
         records = []
         # Agrupa UCs por nivel de Bloom
         ucs_by_bloom: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -303,15 +320,16 @@ def task_submit_difficulty_batch(**context):
     return batch_job_id
 
 
-def task_finalize_outputs(**context):
-    """Tarefa: Combina UCs com avaliações (recalculadas) e salva outputs finais."""
+def task_finalize_outputs(run_id: str, **context):
+    """Tarefa: Combina UCs com avaliações e salva outputs finais para um run_id."""
     # ... (lógica como antes, lendo de stage2, stage3, stage4, salvando em stage5) ...
     # Adapta _calculate_final_difficulty_from_raw se necessário
     logging.info("--- TASK: finalize_outputs ---")
     try:
-        ucs_raw_df = load_dataframe(stage2_output_ucs_dir, GENERATED_UCS_RAW)
-        rels_intermed_df = load_dataframe(stage3_dir, REL_INTERMEDIATE)
-        evals_raw_df = load_dataframe(stage4_output_eval_dir, UC_EVALUATIONS_RAW)  # Lê avaliações brutas
+        _, _, s2, s3, s4, s5, _ = _get_dirs(run_id)
+        ucs_raw_df = load_dataframe(s2, GENERATED_UCS_RAW)
+        rels_intermed_df = load_dataframe(s3, REL_INTERMEDIATE)
+        evals_raw_df = load_dataframe(s4, UC_EVALUATIONS_RAW)
 
         if ucs_raw_df is None: raise ValueError("UCs brutas não encontradas.")
 
@@ -339,15 +357,52 @@ def task_finalize_outputs(**context):
                       except: final_ucs_df[col] = final_ucs_df[col].fillna(0).astype(int)
                  else: final_ucs_df[col] = 0; final_ucs_df[col] = final_ucs_df[col].astype(int)
             final_ucs_df["difficulty_justification"] = final_ucs_df["difficulty_justification"].fillna("Não avaliado")
-            save_dataframe(final_ucs_df, stage5_dir, FINAL_UC_FILE)
+            save_dataframe(final_ucs_df, s5, FINAL_UC_FILE)
         else: raise ValueError("Lista final de UCs vazia.")
 
         if rels_intermed_df is not None:
-            save_dataframe(rels_intermed_df, stage5_dir, FINAL_REL_FILE)
+            save_dataframe(rels_intermed_df, s5, FINAL_REL_FILE)
         else:
             logging.warning("Relações intermediárias não encontradas.")
 
     except Exception as e:
         logging.exception("Falha na task_finalize_outputs")
         raise
+    
+
+def task_process_uc_generation_batch(run_id: str, batch_id: str, **context) -> bool:
+    """Processa resultados de geração UC para um run_id e batch_id."""
+    logging.info(f"--- TASK: process_uc_generation_batch (run_id={run_id}, batch_id={batch_id}) ---")
+    # Define diretórios de saída
+    _, _, s2, _, _, _, _ = _get_dirs(run_id)
+    # Checa status do batch
+    status, output_file_id, error_file_id = check_batch_status(batch_id)
+    if status != 'completed':
+        raise ValueError(f"Batch {batch_id} not completed (status: {status})")
+    # Processa e salva parquet de UCs geradas
+    return process_batch_results(
+        batch_id,
+        output_file_id,
+        error_file_id,
+        s2,
+        GENERATED_UCS_RAW,
+    )
+
+def task_process_difficulty_batch(run_id: str, batch_id: str, **context) -> bool:
+    """Processa resultados de avaliação de dificuldade para um run_id e batch_id."""
+    logging.info(f"--- TASK: process_difficulty_batch (run_id={run_id}, batch_id={batch_id}) ---")
+    # Define diretórios de saída de avaliação
+    _, _, _, _, s4, _, _ = _get_dirs(run_id)
+    # Checa status do batch
+    status, output_file_id, error_file_id = check_batch_status(batch_id)
+    if status != 'completed':
+        raise ValueError(f"Batch {batch_id} not completed (status: {status})")
+    # Processa e salva parquet de avaliações brutas
+    return process_batch_results(
+        batch_id,
+        output_file_id,
+        error_file_id,
+        s4,
+        UC_EVALUATIONS_RAW,
+    )
         

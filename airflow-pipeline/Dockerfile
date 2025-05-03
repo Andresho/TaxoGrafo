@@ -30,30 +30,10 @@ USER root
 RUN mkdir -p ${AIRFLOW_HOME}/dags ${AIRFLOW_HOME}/logs ${AIRFLOW_HOME}/plugins ${AIRFLOW_HOME}/scripts ${AIRFLOW_HOME}/data \
     && chown -R ${AIRFLOW_UID}:${AIRFLOW_GID} ${AIRFLOW_HOME}
 
-# Clone GraphRag repository as root and adjust ownership
-RUN apt-get update && apt-get install -y git \
-    && git clone https://github.com/microsoft/graphrag.git /opt/airflow/graphrag \
-    && chown -R ${AIRFLOW_UID}:${AIRFLOW_GID} /opt/airflow/graphrag \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install GraphRag as the airflow user
-USER ${AIRFLOW_UID}
-RUN python -m pip install --no-cache-dir --user /opt/airflow/graphrag
-
-# Revert to root for any subsequent operations
-USER root
 
 COPY --chown=${AIRFLOW_UID}:${AIRFLOW_GID} dags/ /opt/airflow/dags/
-# Initialize GraphRag project skeleton (generates .env, prompts, default settings.yaml)
-USER ${AIRFLOW_UID}
-RUN graphrag init --root ${AIRFLOW_HOME}/data --force
-
-# Overwrite default settings.yaml with custom configuration
-USER root
-COPY --chown=${AIRFLOW_UID}:${AIRFLOW_GID} graphrag-settings.yaml ${AIRFLOW_HOME}/data/settings.yaml
-
-# Ensure ownership of the data directory
-RUN chown -R ${AIRFLOW_UID}:${AIRFLOW_GID} ${AIRFLOW_HOME}/data
+## Removido setup do Graphrag (agora isolado em container específico)
+## RUN graphrag init, prompts e settings não são mais necessários aqui
 
 # Switch back to the Airflow user for normal execution
 USER ${AIRFLOW_UID}

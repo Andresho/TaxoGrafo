@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import pendulum
 
+import os
 from airflow.models.dag import DAG
 # Importa operadores usados
-from airflow.operators.bash import BashOperator
-# Usaremos operadores HTTP em vez de PythonOperator para chamar nossa API
+from airflow.providers.docker.operators.docker import DockerOperator
+from docker.types import Mount
+
 from airflow.providers.http.operators.http import SimpleHttpOperator
 from airflow.providers.http.sensors.http import HttpSensor
 
@@ -25,10 +27,31 @@ with DAG(
     """,
 ) as dag:
 
-    # Task 1: executa Graphrag index via CLI
-    graphrag_index = BashOperator(
+    # Task 1: executa Graphrag index em container Docker isolado
+    graphrag_index = DockerOperator(
         task_id="graphrag_index",
-        bash_command="graphrag index --root /opt/airflow/data",
+        image="graphrag:latest",
+        api_version="auto",
+        auto_remove=True,
+        # Cria o diretório de execução e executa index com raiz no run_id (o CLI usará '<root>/output')
+        entrypoint="/bin/bash",
+       command=(
+            '-c "mkdir -p /data/{{ dag_run.run_id }} && '
+            'graphrag init --root /data/{{ dag_run.run_id }} --force &&'
+            'cp /data/settings.yaml /data/{{ dag_run.run_id }}/settings.yaml && '
+            'cp -r /data/input/ /data/{{ dag_run.run_id }}/input/ && '
+            'graphrag index --root /data/{{ dag_run.run_id }}"'
+        ),
+        #   ' && true && sleep infinity"'
+        docker_url="unix://var/run/docker.sock",
+        network_mode="bridge",
+        # Mount named volume 'pipeline_data' into container at /data
+        mounts=[Mount(source='pipeline_data', target='/data', type='volume')],
+        environment={
+            "GRAPHRAG_MODEL": os.getenv("GRAPHRAG_MODEL"),
+            "GRAPHRAG_API_KEY": os.getenv("GRAPHRAG_API_KEY"),
+            "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
+        },
     )
 
     # 2: Prepara origens via API
@@ -36,7 +59,8 @@ with DAG(
         task_id="prepare_origins",
         http_conn_id="pipeline_api",
         method="POST",
-        endpoint="/pipeline/prepare-origins",
+        # roda para este run_id dinamicamente
+        endpoint="/pipeline/{{ dag_run.run_id }}/prepare-origins",
         headers={"Content-Type": "application/json"},
         do_xcom_push=False,
     )
@@ -46,7 +70,7 @@ with DAG(
         task_id="submit_generation_batch",
         http_conn_id="pipeline_api",
         method="POST",
-        endpoint="/pipeline/submit-uc-generation-batch",
+        endpoint="/pipeline/{{ dag_run.run_id }}/submit-uc-generation-batch",
         headers={"Content-Type": "application/json"},
         response_filter=lambda response: response.json().get("batch_id"),
         do_xcom_push=True,
@@ -57,7 +81,8 @@ with DAG(
         task_id="wait_generation_batch",
         http_conn_id="pipeline_api",
         method="GET",
-        endpoint="/pipeline/batch-status/{{ ti.xcom_pull(task_ids='submit_generation_batch') }}",
+        # usa run_id e batch_id
+        endpoint="/pipeline/{{ dag_run.run_id }}/batch-status/{{ ti.xcom_pull(task_ids='submit_generation_batch') }}",
         request_params={},
         response_check=lambda response: response.json().get("status") == "completed",
         poke_interval=60,
@@ -70,7 +95,7 @@ with DAG(
         task_id="process_generation_batch",
         http_conn_id="pipeline_api",
         method="POST",
-        endpoint="/pipeline/process-uc-generation-batch/{{ ti.xcom_pull(task_ids='submit_generation_batch') }}",
+        endpoint="/pipeline/{{ dag_run.run_id }}/process-uc-generation-batch/{{ ti.xcom_pull(task_ids='submit_generation_batch') }}",
         headers={"Content-Type": "application/json"},
         do_xcom_push=False,
     )
@@ -80,7 +105,7 @@ with DAG(
         task_id="define_relationships",
         http_conn_id="pipeline_api",
         method="POST",
-        endpoint="/pipeline/define-relationships",
+        endpoint="/pipeline/{{ dag_run.run_id }}/define-relationships",
         headers={"Content-Type": "application/json"},
         do_xcom_push=False,
     )
@@ -90,7 +115,7 @@ with DAG(
         task_id="submit_difficulty_batch",
         http_conn_id="pipeline_api",
         method="POST",
-        endpoint="/pipeline/submit-difficulty-batch",
+        endpoint="/pipeline/{{ dag_run.run_id }}/submit-difficulty-batch",
         headers={"Content-Type": "application/json"},
         response_filter=lambda response: response.json().get("batch_id"),
         do_xcom_push=True,
@@ -101,7 +126,7 @@ with DAG(
         task_id="wait_difficulty_batch",
         http_conn_id="pipeline_api",
         method="GET",
-        endpoint="/pipeline/batch-status/{{ ti.xcom_pull(task_ids='submit_difficulty_batch') }}",
+        endpoint="/pipeline/{{ dag_run.run_id }}/batch-status/{{ ti.xcom_pull(task_ids='submit_difficulty_batch') }}",
         request_params={},
         response_check=lambda response: response.json().get("status") == "completed",
         poke_interval=60,
@@ -114,7 +139,7 @@ with DAG(
         task_id="process_difficulty_batch",
         http_conn_id="pipeline_api",
         method="POST",
-        endpoint="/pipeline/process-difficulty-batch/{{ ti.xcom_pull(task_ids='submit_difficulty_batch') }}",
+        endpoint="/pipeline/{{ dag_run.run_id }}/process-difficulty-batch/{{ ti.xcom_pull(task_ids='submit_difficulty_batch') }}",
         headers={"Content-Type": "application/json"},
         do_xcom_push=False,
     )
@@ -124,7 +149,7 @@ with DAG(
         task_id="finalize_outputs",
         http_conn_id="pipeline_api",
         method="POST",
-        endpoint="/pipeline/finalize-outputs",
+        endpoint="/pipeline/{{ dag_run.run_id }}/finalize-outputs",
         headers={"Content-Type": "application/json"},
         do_xcom_push=False,
     )

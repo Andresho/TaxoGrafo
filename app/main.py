@@ -6,12 +6,15 @@ from fastapi import FastAPI, HTTPException
 import scripts.pipeline_tasks as pt
 import scripts.batch_utils as batch_utils
 
+import os
+from pathlib import Path
+
 app = FastAPI(
     title="Airflow Pipeline API",
     description="API para expor chamadas aos scripts de pipeline",
     version="0.1.0",
 )
-
+ 
 
 
 @app.get("/", tags=["health"])
@@ -22,107 +25,84 @@ async def health_check():
     return {"status": "ok", "message": "API server is running"}
 
 # --- Pipeline task endpoints ---
-@app.post("/pipeline/prepare-origins", tags=["pipeline"])
-def prepare_origins():
-    """Endpoint to run task_prepare_origins."""
+@app.post("/pipeline/{run_id}/prepare-origins", tags=["pipeline"])
+def prepare_origins(run_id: str):
+    """Endpoint para executar task_prepare_origins em contexto de run_id."""
     try:
-        pt.task_prepare_origins()
-        return {"status": "success", "message": "Origins prepared"}
+        pt.task_prepare_origins(run_id)
+        return {"status": "success", "run_id": run_id, "message": "Origins prepared"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/pipeline/submit-uc-generation-batch", tags=["pipeline"])
-def submit_uc_generation_batch():
-    """Endpoint to run task_submit_uc_generation_batch."""
+@app.post("/pipeline/{run_id}/submit-uc-generation-batch", tags=["pipeline"])
+def submit_uc_generation_batch(run_id: str):
+    """Endpoint para executar task_submit_uc_generation_batch em contexto de run_id."""
     try:
-        batch_id = pt.task_submit_uc_generation_batch()
-        return {"status": "success", "batch_id": batch_id}
+        batch_id = pt.task_submit_uc_generation_batch(run_id)
+        return {"status": "success", "run_id": run_id, "batch_id": batch_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/pipeline/process-uc-generation-batch/{batch_id}", tags=["pipeline"])
-def process_uc_generation_batch(batch_id: str):
-    """Process a completed UC generation batch."""
+@app.post("/pipeline/{run_id}/process-uc-generation-batch/{batch_id}", tags=["pipeline"])
+def process_uc_generation_batch(run_id: str, batch_id: str):
+    """Endpoint para processar resultados de geração UC em contexto de run_id."""
     try:
-        status, output_file_id, error_file_id = batch_utils.check_batch_status(batch_id)
-        if status != 'completed':
-            raise HTTPException(
-                status_code=400,
-                detail=f"Batch {batch_id} not completed (status: {status})",
-            )
-        ok = batch_utils.process_batch_results(
-            batch_id,
-            output_file_id,
-            error_file_id,
-            pt.stage2_output_ucs_dir,
-            pt.GENERATED_UCS_RAW,
-        )
-        return {"status": "success", "processed": ok}
-    except HTTPException:
-        raise
+        ok = pt.task_process_uc_generation_batch(run_id, batch_id)
+        return {"status": "success", "run_id": run_id, "processed": ok}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/pipeline/define-relationships", tags=["pipeline"])
-def define_relationships():
-    """Endpoint to run task_define_relationships."""
+@app.post("/pipeline/{run_id}/define-relationships", tags=["pipeline"])
+def define_relationships(run_id: str):
+    """Endpoint para executar task_define_relationships em contexto de run_id."""
     try:
-        pt.task_define_relationships()
-        return {"status": "success", "message": "Relationships defined"}
+        pt.task_define_relationships(run_id)
+        return {"status": "success", "run_id": run_id, "message": "Relationships defined"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/pipeline/submit-difficulty-batch", tags=["pipeline"])
-def submit_difficulty_batch():
-    """Endpoint to run task_submit_difficulty_batch."""
+@app.post("/pipeline/{run_id}/submit-difficulty-batch", tags=["pipeline"])
+def submit_difficulty_batch(run_id: str):
+    """Endpoint para executar task_submit_difficulty_batch em contexto de run_id."""
     try:
-        batch_id = pt.task_submit_difficulty_batch()
-        return {"status": "success", "batch_id": batch_id}
+        batch_id = pt.task_submit_difficulty_batch(run_id)
+        return {"status": "success", "run_id": run_id, "batch_id": batch_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/pipeline/batch-status/{batch_id}", tags=["pipeline"])
-def get_batch_status(batch_id: str):
-    """Endpoint to retrieve the status of any batch job."""
+@app.get("/pipeline/{run_id}/batch-status/{batch_id}", tags=["pipeline"])
+def get_batch_status(run_id: str, batch_id: str):
+    """Endpoint para obter status de um batch em contexto de run_id."""
     try:
         status, output_file_id, error_file_id = batch_utils.check_batch_status(batch_id)
         return {
             "status": status,
+            "run_id": run_id,
             "output_file_id": output_file_id,
             "error_file_id": error_file_id,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/pipeline/process-difficulty-batch/{batch_id}", tags=["pipeline"])
-def process_difficulty_batch(batch_id: str):
-    """Process a completed difficulty evaluation batch."""
+@app.post("/pipeline/{run_id}/process-difficulty-batch/{batch_id}", tags=["pipeline"])
+def process_difficulty_batch(run_id: str, batch_id: str):
+    """Endpoint para processar batch de dificuldade em contexto de run_id."""
     try:
-        status, output_file_id, error_file_id = batch_utils.check_batch_status(batch_id)
-        if status != 'completed':
-            raise HTTPException(
-                status_code=400,
-                detail=f"Batch {batch_id} not completed (status: {status})",
-            )
-        ok = batch_utils.process_batch_results(
-            batch_id,
-            output_file_id,
-            error_file_id,
-            pt.stage4_output_eval_dir,
-            pt.UC_EVALUATIONS_RAW,
-        )
-        return {"status": "success", "processed": ok}
-    except HTTPException:
-        raise
+        ok = pt.task_process_difficulty_batch(run_id, batch_id)
+        return {"status": "success", "run_id": run_id, "processed": ok}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/pipeline/finalize-outputs", tags=["pipeline"])
-def finalize_outputs():
-    """Endpoint to run task_finalize_outputs."""
+@app.post("/pipeline/{run_id}/finalize-outputs", tags=["pipeline"])
+def finalize_outputs(run_id: str):
+    """Endpoint para executar task_finalize_outputs em contexto de run_id."""
     try:
-        pt.task_finalize_outputs()
-        return {"status": "success", "message": "Final outputs saved"}
+        pt.task_finalize_outputs(run_id)
+        return {"status": "success", "run_id": run_id, "message": "Final outputs saved"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
