@@ -66,6 +66,11 @@ import crud.graphrag_entities as crud_graphrag_entities
 import crud.graphrag_relationships as crud_graphrag_relationships
 import crud.graphrag_text_units as crud_graphrag_text_units
 import crud.knowledge_unit_origins as crud_knowledge_unit_origins
+import crud.knowledge_relationships_intermediate as crud_rel_intermediate
+import crud.final_knowledge_units as crud_final_ucs
+import crud.final_knowledge_relationships as crud_final_rels
+import crud.generated_ucs_raw as crud_generated_ucs_raw
+import crud.knowledge_unit_evaluations_batch as crud_knowledge_unit_evaluations_batch
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -95,6 +100,12 @@ DEFAULT_OUTPUT_COLUMNS = {
 def task_prepare_origins(run_id: str, **context):
     """Tarefa 1: Prepara e salva uc_origins.parquet para um run_id (ou padrão)."""
     logging.info(f"--- TASK: prepare_origins (run_id={run_id}) ---")
+    # Idempotência: se já houver origens instaladas, pular
+    with get_session() as db:
+        existing = crud_knowledge_unit_origins.get_knowledge_unit_origins(db, run_id)
+        if existing:
+            logging.info(f"Origem já existe para run_id={run_id}, pulando.")
+            return
     try:
         base_input, s1, *_ = _get_dirs(run_id)
         entities_df = load_dataframe(base_input, "entities")
@@ -137,8 +148,15 @@ def task_prepare_origins(run_id: str, **context):
 def task_submit_uc_generation_batch(run_id: str, **context):
     """Tarefa 2: Prepara JSONL e submete batch de geração UC para um run_id."""
     logging.info(f"--- TASK: submit_uc_generation_batch (run_id={run_id}) ---")
+    # Idempotência: se já houver UCs geradas, pular
+    with get_session() as db:
+        existing = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
+        if existing:
+            # Idempotência: já existem resultados, retorna um batch_id fictício para fluxo
+            fake_id = str(__import__('uuid').uuid4())
+            logging.info(f"UCs geradas já existem para run_id={run_id}, pulando submissão de batch. Retornando fake batch_id={fake_id}")
+            return fake_id
     llm = get_llm_strategy()
-    batch_job_id = None
     try:
         with get_session() as db:
             records = crud_knowledge_unit_origins.get_knowledge_unit_origins(db, run_id)
@@ -216,14 +234,14 @@ def task_wait_and_process_batch_generic(batch_id_key: str, output_dir: Path, out
     ti = context['ti'] # TaskInstance para XComs
     batch_id = ti.xcom_pull(task_ids=f'submit_{batch_id_key}_batch', key='return_value')
 
-    if not batch_id:
-        logging.warning(f"Nenhum batch_id encontrado para {batch_id_key} via XCom. Pulando.")
-        # Garante arquivo vazio para downstream
-        output_dir.mkdir(parents=True, exist_ok=True)
-        # Gera DataFrame vazio com colunas definidas em DEFAULT_OUTPUT_COLUMNS
-        empty_cols = DEFAULT_OUTPUT_COLUMNS.get(output_filename, [])
-        save_dataframe(pd.DataFrame(columns=empty_cols), output_dir, output_filename)
-        return # Considera "sucesso" pois não havia nada a fazer
+    # if not batch_id:
+    #     logging.warning(f"Nenhum batch_id encontrado para {batch_id_key} via XCom. Pulando.")
+    #     # Garante arquivo vazio para downstream
+    #     output_dir.mkdir(parents=True, exist_ok=True)
+    #     # Gera DataFrame vazio com colunas definidas em DEFAULT_OUTPUT_COLUMNS
+    #     empty_cols = DEFAULT_OUTPUT_COLUMNS.get(output_filename, [])
+    #     save_dataframe(pd.DataFrame(columns=empty_cols), output_dir, output_filename)
+    #     return # Considera "sucesso" pois não havia nada a fazer
 
     logging.info(f"--- TASK: wait_and_process_{batch_id_key}_results (Batch ID: {batch_id}) ---")
 
@@ -252,20 +270,31 @@ task_wait_and_process_batch = task_wait_and_process_batch_generic
 def task_define_relationships(run_id: str, **context):
     """Tarefa: Define relações REQUIRES e EXPANDS usando Builders para um run_id."""
     logging.info(f"--- TASK: define_relationships (run_id={run_id}) ---")
-    try:
-        _, _, s2, s3, *_ = _get_dirs(run_id)
-        # Carrega UCs geradas
-        generated_df = load_dataframe(s2, GENERATED_UCS_RAW)
-        if generated_df is None or generated_df.empty:
-            logging.warning("Nenhuma UC para definir relações.")
-            # Salva DataFrame vazio com colunas mínimas
-            save_dataframe(pd.DataFrame(columns=["source", "target", "type"]), s3, REL_INTERMEDIATE)
+    # Idempotência: se já existir relações intermediárias, pular
+    with get_session() as db:
+        existing = crud_rel_intermediate.get_knowledge_relationships_intermediate(db, run_id)
+        if existing:
+            logging.info(f"Relações intermediárias já existem para run_id={run_id}, pulando.")
             return
+    try:
+        # Load generated UCs and Graphrag inputs via CRUD
+        _, _, s2, s3, *_ = _get_dirs(run_id)
+        with get_session() as db:
+            generated_records = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
+            graphrag_rels = crud_graphrag_relationships.get_relationships(db, run_id)
+            graphrag_ents = crud_graphrag_entities.get_entities(db, run_id)
+        # Convert to DataFrame
+        generated_df = pd.DataFrame(generated_records)
+        relationships_df = pd.DataFrame(graphrag_rels)
+        entities_df = pd.DataFrame(graphrag_ents)
+        # Handle no UCs case
+        if generated_df.empty:
+            logging.warning("Nenhuma UC para definir relações.")
+            with get_session() as db:
+                crud_rel_intermediate.add_knowledge_relationships_intermediate(db, run_id, [])
+            return
+        # Prepare records and context for builders
         generated_ucs = generated_df.to_dict('records')
-        # Carrega dados para EXPANDS
-        relationships_df = load_dataframe(BASE_INPUT_DIR, "relationships")
-        entities_df = load_dataframe(BASE_INPUT_DIR, "entities")
-        # Contexto para builders
         ctx = {
             'generated_ucs': generated_ucs,
             'relationships_df': relationships_df,
@@ -275,12 +304,10 @@ def task_define_relationships(run_id: str, **context):
         builder = RequiresBuilder()
         builder.set_next(ExpandsBuilder())
         all_rels = builder.build([], ctx)
-        # Salva resultados
-        if all_rels:
-            save_dataframe(pd.DataFrame(all_rels), s3, REL_INTERMEDIATE)
-        else:
-            logging.warning("Nenhuma relação definida.")
-            save_dataframe(pd.DataFrame(columns=["source", "target", "type"]), s3, REL_INTERMEDIATE)
+        # Persiste resultados na tabela intermediária
+        # Registra todas as relações (pode ser lista vazia)
+        with get_session() as db:
+            crud_rel_intermediate.add_knowledge_relationships_intermediate(db, run_id, all_rels or [])
     except Exception:
         logging.exception("Falha na task_define_relationships")
         raise
@@ -289,14 +316,26 @@ def task_submit_difficulty_batch(run_id: str, **context):
     """Tarefa: Prepara e submete batch de avaliação de dificuldade para um run_id."""
     # ... (lógica como antes, lendo de stage2_output_ucs_dir) ...
     logging.info("--- TASK: submit_difficulty_batch ---")
+    # Idempotência: se já houver avaliações, pular
+    with get_session() as db:
+        existing = crud_knowledge_unit_evaluations_batch.get_knowledge_unit_evaluations_batch(db, run_id)
+        if existing:
+            # Idempotência: já existem avaliações, retorna um batch_id fictício para fluxo
+            fake_id = str(__import__('uuid').uuid4())
+            logging.info(f"Avaliações já existem para run_id={run_id}, pulando submissão de batch. Retornando fake batch_id={fake_id}")
+            return fake_id
     # Garante que o LLM strategy está configurado
     llm = get_llm_strategy()
     batch_job_id = None
     try:
-        _, _, s2, _, s4, _, batch_dir = _get_dirs(run_id)
-        generated_ucs_df = load_dataframe(s2, "generated_ucs_raw")
-        if generated_ucs_df is None or generated_ucs_df.empty: logging.warning("Nenhuma UC para avaliar."); return None
-        generated_ucs = generated_ucs_df.to_dict('records')
+        # Diretórios de saída e batch
+        _, _, _, _, s4, _, batch_dir = _get_dirs(run_id)
+        # Carrega UCs geradas via CRUD
+        with get_session() as db:
+            generated_ucs = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
+        # if not generated_ucs:
+        #    logging.warning("Nenhuma UC para avaliar.")
+        #    return None
         try:
             with open(PROMPT_UC_DIFFICULTY_FILE, 'r', encoding='utf-8') as f: prompt_template = f.read()
         except Exception as e: raise ValueError(f"Erro lendo prompt diff: {e}")
@@ -359,45 +398,49 @@ def task_finalize_outputs(run_id: str, **context):
     # ... (lógica como antes, lendo de stage2, stage3, stage4, salvando em stage5) ...
     # Adapta _calculate_final_difficulty_from_raw se necessário
     logging.info("--- TASK: finalize_outputs ---")
+    # Idempotência: se já houver UCs finais, pular
+    with get_session() as db:
+        existing = crud_final_ucs.get_final_knowledge_units(db, run_id)
+        if existing:
+            logging.info(f"Finalização já concluída para run_id={run_id}, pulando.")
+            return
     try:
+        # Define diretórios e carrega dados via CRUD
         _, _, s2, s3, s4, s5, _ = _get_dirs(run_id)
-        ucs_raw_df = load_dataframe(s2, GENERATED_UCS_RAW)
-        rels_intermed_df = load_dataframe(s3, REL_INTERMEDIATE)
-        evals_raw_df = load_dataframe(s4, UC_EVALUATIONS_RAW)
+        with get_session() as db:
+            generated_records = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
+            rels_intermed_records = crud_rel_intermediate.get_knowledge_relationships_intermediate(db, run_id)
+            evals_records = crud_knowledge_unit_evaluations_batch.get_knowledge_unit_evaluations_batch(db, run_id)
 
-        if ucs_raw_df is None: raise ValueError("UCs brutas não encontradas.")
+        if not generated_records:
+            raise ValueError("UCs brutas não encontradas.")
 
         final_ucs_list: List[Dict[str, Any]] = []
-        generated_ucs_list = ucs_raw_df.to_dict('records') # Lista original
+        generated_ucs_list = generated_records
 
-        if evals_raw_df is not None and not evals_raw_df.empty:
+        if evals_records:
             logging.info("Recalculando scores finais de dificuldade...")
-            raw_evals_list = evals_raw_df.to_dict('records')
-            # Usa avaliações brutas para calcular scores finais
             final_ucs_list, evaluated_count, min_evals_met_count = _calculate_final_difficulty_from_raw(
-                generated_ucs_list, raw_evals_list
+                generated_ucs_list, evals_records
             )
         else:
             logging.warning("Avaliações brutas não encontradas. UCs finais sem scores.")
-            final_ucs_list = generated_ucs_list # Usa a lista original
-            for uc in final_ucs_list: uc["difficulty_score"] = None; uc["difficulty_justification"] = "Não avaliado"; uc["evaluation_count"] = 0
+            final_ucs_list = []
+            for uc in generated_ucs_list:
+                uc["difficulty_score"] = None
+                uc["difficulty_justification"] = "Não avaliado"
+                uc["evaluation_count"] = 0
+                final_ucs_list.append(uc)
 
-        if final_ucs_list:
-            final_ucs_df = pd.DataFrame(final_ucs_list)
-            # Garante tipos corretos
-            for col in ["difficulty_score", "evaluation_count"]:
-                 if col in final_ucs_df.columns:
-                      try: final_ucs_df[col] = final_ucs_df[col].astype('Int64')
-                      except: final_ucs_df[col] = final_ucs_df[col].fillna(0).astype(int)
-                 else: final_ucs_df[col] = 0; final_ucs_df[col] = final_ucs_df[col].astype(int)
-            final_ucs_df["difficulty_justification"] = final_ucs_df["difficulty_justification"].fillna("Não avaliado")
-            save_dataframe(final_ucs_df, s5, FINAL_UC_FILE)
-        else: raise ValueError("Lista final de UCs vazia.")
+        if not final_ucs_list:
+            raise ValueError("Lista final de UCs vazia.")
+        # Persiste final UCs na tabela
+        with get_session() as db:
+            crud_final_ucs.add_final_knowledge_units(db, run_id, final_ucs_list)
 
-        if rels_intermed_df is not None:
-            save_dataframe(rels_intermed_df, s5, FINAL_REL_FILE)
-        else:
-            logging.warning("Relações intermediárias não encontradas.")
+        # Persiste final relationships na tabela
+        with get_session() as db:
+            crud_final_rels.add_final_knowledge_relationships(db, run_id, rels_intermed_records)
 
     except Exception as e:
         logging.exception("Falha na task_finalize_outputs")
@@ -413,7 +456,7 @@ def task_process_uc_generation_batch(run_id: str, batch_id: str, **context) -> b
     status, output_file_id, error_file_id = check_batch_status(batch_id)
     if status != 'completed':
         raise ValueError(f"Batch {batch_id} not completed (status: {status})")
-    # Processa e salva parquet de UCs geradas
+    # Processa resultados do batch
     return process_batch_results(
         batch_id,
         output_file_id,

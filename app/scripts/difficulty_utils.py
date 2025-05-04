@@ -24,8 +24,9 @@ def _calculate_final_difficulty_from_raw(
     uc_scores: Dict[str, List[int]] = defaultdict(list)
     uc_justifications: Dict[str, List[str]] = defaultdict(list)
     uc_evaluation_count: Counter = Counter()
+
     for evaluation in raw_evaluations:
-        uc_id = evaluation.get("uc_id")
+        uc_id = evaluation.get("knowledge_unit_id")
         score = evaluation.get("difficulty_score")
         justification = evaluation.get("justification")
         if uc_id and isinstance(score, int) and 0 <= score <= 100:
@@ -36,11 +37,13 @@ def _calculate_final_difficulty_from_raw(
     updated_ucs_list: List[Dict[str, Any]] = []
     evaluated_count = 0
     min_evals_met_count = 0
+
     for original_uc in generated_ucs:
         uc = original_uc.copy()
         uc_id = uc.get("uc_id")
         scores = uc_scores.get(uc_id)
         eval_count = uc_evaluation_count.get(uc_id, 0)
+
         if scores:
             final_score = round(sum(scores) / len(scores))
             justification_text = " | ".join(uc_justifications.get(uc_id, ["N/A"]))

@@ -11,8 +11,16 @@ from docker.types import Mount
 
 from airflow.providers.http.operators.http import SimpleHttpOperator
 from airflow.providers.http.sensors.http import HttpSensor
+from airflow.operators.python import BranchPythonOperator
+from airflow.operators.empty import EmptyOperator
+from airflow.utils.trigger_rule import TriggerRule
 
-
+def _skip_or_run_graphrag(**kwargs):
+    """Retorna a tarefa a executar: 'prepare_origins' ou 'graphrag_index'."""
+    dag_run = kwargs.get('dag_run')
+    if dag_run and dag_run.conf.get('skip_graphrag', False):
+        return "prepare_origins"
+    return "graphrag_index"
 
 with DAG(
     dag_id="knowledge_graph_pipeline",
@@ -27,6 +35,12 @@ with DAG(
     utilizando a OpenAI Batch API para geração de UCs e avaliação de dificuldade.
     """,
 ) as dag:
+
+    # Decide se deve executar a etapa Graphrag index ou pular
+    branch_graphrag = BranchPythonOperator(
+        task_id="branch_graphrag",
+        python_callable=_skip_or_run_graphrag,
+    )
 
     # Task 1: executa Graphrag index em container Docker isolado
     graphrag_index = DockerOperator(
@@ -60,6 +74,8 @@ with DAG(
         endpoint="/pipeline/{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}/prepare-origins",
         headers={"Content-Type": "application/json"},
         do_xcom_push=False,
+        # allow this task to run if at least one upstream succeeded (branch or graphrag)
+        trigger_rule=TriggerRule.ONE_SUCCESS,
     )
 
     # 3: Submete batch de geração UC e armazena batch_id em XCom
@@ -151,7 +167,8 @@ with DAG(
         do_xcom_push=False,
     )
 
-    # Definindo as dependências
+    # Definindo as dependências com idempotência do Graphrag
+    branch_graphrag >> [graphrag_index, prepare_origins]
     graphrag_index >> prepare_origins
     prepare_origins >> submit_generation >> wait_generation >> process_generation
     process_generation >> define_rels

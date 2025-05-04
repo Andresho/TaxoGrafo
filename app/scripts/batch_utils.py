@@ -1,16 +1,21 @@
 import logging
 import json
 import uuid
-import pandas as pd
 import scripts.pipeline_tasks as pt
 from scripts.llm_client import get_llm_strategy
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Tuple, Optional
+from scripts.llm_client import get_llm_strategy
+from pathlib import Path
+from db import get_session
+from crud.generated_ucs_raw import add_generated_ucs_raw
+from crud.knowledge_unit_evaluations_batch import add_knowledge_unit_evaluations_batch
 
 def check_batch_status(batch_id: str) -> Tuple[str, Optional[str], Optional[str]]:
     """Consulta status do batch via LLM strategy e retorna (status, output_file_id, error_file_id)."""
     llm = get_llm_strategy()
     return llm.get_batch_status(batch_id)
+
 # --- Template Method para processar batches ---
 class BaseBatchProcessor(ABC):
     """Template Method para processar batches OpenAI."""
@@ -29,8 +34,7 @@ class BaseBatchProcessor(ABC):
         self.output_filename = output_filename
 
     def process(self) -> bool:
-        """Processa e persiste resultados do batch usando LLM strategy."""
-        from scripts.llm_client import get_llm_strategy
+        """Processa resultados do batch usando LLM strategy e persiste no banco de dados."""
         llm = get_llm_strategy()
         logging.info(f"Processando resultados do Batch {self.batch_id} (Output File: {self.output_file_id})...")
         processed_data: List[Dict[str, Any]] = []
@@ -47,10 +51,12 @@ class BaseBatchProcessor(ABC):
                 errors_in_batch += self._process_line(line, processed_data)
             logging.info(f"Processamento arquivo concluído. {len(processed_data)} registros. {errors_in_batch} erros.")
             if processed_data:
-                df = pd.DataFrame(processed_data)
-                pt.save_dataframe(df, self.stage_output_dir, self.output_filename)
-                if errors_in_batch > 0:
-                    logging.warning("Processamento concluído, mas com erros individuais no batch.")
+                # Persiste dados processados no banco
+                try:
+                    self._save_to_db(processed_data)
+                except Exception:
+                    logging.exception("Falha ao persistir batch processado no banco de dados.")
+                    return False
                 all_ok = True
             elif errors_in_batch > 0:
                 logging.error("Nenhum dado processado com sucesso do batch.")
@@ -125,6 +131,9 @@ class BaseBatchProcessor(ABC):
     def parse_inner(self, inner_data: Dict[str, Any], origin_id: str) -> Tuple[List[Dict[str, Any]], int]:
         """Extrai itens processados de inner_data e retorna (itens, numero_de_erros)."""
         ...
+    def _save_to_db(self, processed_data: List[Dict[str, Any]]) -> None:
+        """Hook para subclasses persistirem processed_data no banco. Deve ser sobrescrito."""
+        raise NotImplementedError
 
 class GenerationBatchProcessor(BaseBatchProcessor):
     def parse_inner(self, inner_data: Dict[str, Any], origin_id: str) -> Tuple[List[Dict[str, Any]], int]:
@@ -145,6 +154,12 @@ class GenerationBatchProcessor(BaseBatchProcessor):
                 errors += 1
                 logging.warning(f"Formato UC inválido para {origin_id}: {unit}")
         return items, errors
+    def _save_to_db(self, processed_data: List[Dict[str, Any]]) -> None:
+        """Persiste generated UCs raw no banco."""
+        # Extrai run_id da estrutura de diretórios: AIRFLOW_DATA_DIR/run_id/pipeline_workdir/2_generated_ucs
+        run_id = Path(self.stage_output_dir).parent.parent.name
+        with get_session() as db:
+            add_generated_ucs_raw(db, run_id, processed_data)
 
 class DifficultyBatchProcessor(BaseBatchProcessor):
     def parse_inner(self, inner_data: Dict[str, Any], origin_id: str) -> Tuple[List[Dict[str, Any]], int]:
@@ -157,11 +172,18 @@ class DifficultyBatchProcessor(BaseBatchProcessor):
             return items, errors
         for assessment in assessments:
             if isinstance(assessment, dict) and "uc_id" in assessment and "difficulty_score" in assessment:
+                assessment["knowledge_unit_id"] = assessment.pop("uc_id")
                 items.append(assessment)
             else:
                 errors += 1
                 logging.warning(f"Formato assessment inválido para {origin_id}: {assessment}")
         return items, errors
+    def _save_to_db(self, processed_data: List[Dict[str, Any]]) -> None:
+        """Persiste raw UC evaluations no banco."""
+        # Extrai run_id da estrutura de diretórios: AIRFLOW_DATA_DIR/run_id/pipeline_workdir/4_difficulty_evals
+        run_id = Path(self.stage_output_dir).parent.parent.name
+        with get_session() as db:
+            add_knowledge_unit_evaluations_batch(db, run_id, processed_data)
 
 def process_batch_results(
     batch_id: str,

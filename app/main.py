@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import shutil
 import requests
+import time
 
 app = FastAPI(
     title="Airflow Pipeline API",
@@ -145,9 +146,26 @@ def init_pipeline(run_id: str):
                 raise HTTPException(status_code=500, detail="input directory not found in base data dir")
             shutil.copytree(src_input, dst_input)
             created = True
-        # Dispara o DAG no Airflow via API
+        # Dispara o DAG no Airflow via API, informando se podemos pular o Graphrag
         trigger_url = f"{airflow_api_url}/api/v1/dags/{dag_id}/dagRuns"
-        payload = {"dag_run_id": run_id, "conf": {"pipeline_id": run_id}}
+        # Idempotência: verifica se os arquivos do Graphrag já existem
+        required_files = [
+            "communities.parquet",
+            "community_reports.parquet",
+            "documents.parquet",
+            "entities.parquet",
+            "relationships.parquet",
+            "text_units.parquet",
+        ]
+        output_dir = run_dir / "output"
+        skip_graphrag = output_dir.is_dir() and all((output_dir / f).exists() for f in required_files)
+        payload = {
+            "dag_run_id": run_id + "_" + str(int(time.time())),
+            "conf": {
+                "pipeline_id": run_id,
+                "skip_graphrag": skip_graphrag,
+            },
+        }
         resp = requests.post(
             trigger_url,
             json=payload,
