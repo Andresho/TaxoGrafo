@@ -68,6 +68,7 @@ def _create_expands_links(
                                 "type": "EXPANDS",
                                 "weight": rel_weight,
                                 "graphrag_rel_desc": desc_clean,
+                                "origin_id": s_id,
                             }
                             new_expands_rels.append(rel)
                             rev_rel = {
@@ -76,6 +77,7 @@ def _create_expands_links(
                                 "type": "EXPANDS",
                                 "weight": rel_weight,
                                 "graphrag_rel_desc": desc_clean,
+                                "origin_id": t_id,
                             }
                             new_expands_rels.append(rev_rel)
     logging.info(f"Processadas {processed_graphrag_rels} relações GraphRAG com UCs.")

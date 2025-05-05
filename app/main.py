@@ -51,6 +51,10 @@ def submit_uc_generation_batch(run_id: str):
 @app.post("/pipeline/{run_id}/process-uc-generation-batch/{batch_id}", tags=["pipeline"])
 def process_uc_generation_batch(run_id: str, batch_id: str):
     """Endpoint para processar resultados de geração UC em contexto de run_id."""
+
+    if batch_id == "fake_id_for_indepotency":
+        return {"status": "completed", "run_id": run_id, "processed": True}
+
     try:
         ok = pt.task_process_uc_generation_batch(run_id, batch_id)
         return {"status": "success", "run_id": run_id, "processed": ok}
@@ -80,6 +84,9 @@ def submit_difficulty_batch(run_id: str):
 @app.get("/pipeline/{run_id}/batch-status/{batch_id}", tags=["pipeline"])
 def get_batch_status(run_id: str, batch_id: str):
     """Endpoint para obter status de um batch em contexto de run_id."""
+    if batch_id == "fake_id_for_indepotency":
+        return {"status": "completed", "run_id": run_id, "processed": True}
+
     try:
         status, output_file_id, error_file_id = batch_utils.check_batch_status(batch_id)
         return {

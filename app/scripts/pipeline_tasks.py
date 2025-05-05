@@ -153,7 +153,7 @@ def task_submit_uc_generation_batch(run_id: str, **context):
         existing = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
         if existing:
             # Idempotência: já existem resultados, retorna um batch_id fictício para fluxo
-            fake_id = str(__import__('uuid').uuid4())
+            fake_id = 'fake_id_for_indepotency'
             logging.info(f"UCs geradas já existem para run_id={run_id}, pulando submissão de batch. Retornando fake batch_id={fake_id}")
             return fake_id
     llm = get_llm_strategy()
@@ -321,7 +321,7 @@ def task_submit_difficulty_batch(run_id: str, **context):
         existing = crud_knowledge_unit_evaluations_batch.get_knowledge_unit_evaluations_batch(db, run_id)
         if existing:
             # Idempotência: já existem avaliações, retorna um batch_id fictício para fluxo
-            fake_id = str(__import__('uuid').uuid4())
+            fake_id = "fake_id_for_indepotency"
             logging.info(f"Avaliações já existem para run_id={run_id}, pulando submissão de batch. Retornando fake batch_id={fake_id}")
             return fake_id
     # Garante que o LLM strategy está configurado
@@ -333,9 +333,7 @@ def task_submit_difficulty_batch(run_id: str, **context):
         # Carrega UCs geradas via CRUD
         with get_session() as db:
             generated_ucs = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
-        # if not generated_ucs:
-        #    logging.warning("Nenhuma UC para avaliar.")
-        #    return None
+
         try:
             with open(PROMPT_UC_DIFFICULTY_FILE, 'r', encoding='utf-8') as f: prompt_template = f.read()
         except Exception as e: raise ValueError(f"Erro lendo prompt diff: {e}")

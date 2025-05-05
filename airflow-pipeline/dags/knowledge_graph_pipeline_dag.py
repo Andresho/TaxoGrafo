@@ -16,10 +16,10 @@ from airflow.operators.empty import EmptyOperator
 from airflow.utils.trigger_rule import TriggerRule
 
 def _skip_or_run_graphrag(**kwargs):
-    """Retorna a tarefa a executar: 'prepare_origins' ou 'graphrag_index'."""
+    """Retorna a tarefa a executar: 'skip_graphrag' ou 'graphrag_index'."""
     dag_run = kwargs.get('dag_run')
     if dag_run and dag_run.conf.get('skip_graphrag', False):
-        return "prepare_origins"
+        return "skip_graphrag"
     return "graphrag_index"
 
 with DAG(
@@ -42,6 +42,9 @@ with DAG(
         python_callable=_skip_or_run_graphrag,
     )
 
+    skip_graphrag = EmptyOperator(
+        task_id="skip_graphrag",
+    )
     # Task 1: executa Graphrag index em container Docker isolado
     graphrag_index = DockerOperator(
         task_id="graphrag_index",
@@ -168,8 +171,9 @@ with DAG(
     )
 
     # Definindo as dependências com idempotência do Graphrag
-    branch_graphrag >> [graphrag_index, prepare_origins]
+    branch_graphrag >> [graphrag_index, skip_graphrag]
     graphrag_index >> prepare_origins
+    skip_graphrag >> prepare_origins
     prepare_origins >> submit_generation >> wait_generation >> process_generation
     process_generation >> define_rels
     define_rels >> submit_difficulty >> wait_difficulty >> process_difficulty
