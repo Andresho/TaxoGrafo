@@ -26,6 +26,5 @@ def add_records(db: Session, model: Type, run_id: str, records: list) -> None:
     # Determine primary key columns for conflict handling (supports composite keys)
     pk_cols = [col.name for col in model.__table__.primary_key.columns]
     stmt = stmt.on_conflict_do_nothing(index_elements=pk_cols)
-    # Execute and commit
+
     db.execute(stmt)
-    db.commit()

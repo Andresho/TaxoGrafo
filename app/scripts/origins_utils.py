@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple, Set, Optional
 from abc import ABC, abstractmethod
 from scripts.constants import BLOOM_ORDER, BLOOM_ORDER_MAP
+import scripts.pipeline_tasks as pt
 
 class OriginSelector(ABC):
     """Interface para seleção de origens de UC."""
@@ -122,7 +123,6 @@ def _select_origins_for_testing(
     logging.info(f"Hub selecionado: ID={hub_id}, Title='{hub_origin.get('title')[:50]}...'")
     neighbor_ids: Set[str] = set()
     # Carrega DataFrames dinamicamente para permitir monkeypatch em pipeline_tasks
-    import scripts.pipeline_tasks as pt
     relationships_df = pt.load_dataframe(graphrag_output_dir, "relationships")
     entities_df = pt.load_dataframe(graphrag_output_dir, "entities")
     if relationships_df is not None and entities_df is not None:

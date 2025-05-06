@@ -71,6 +71,7 @@ import crud.final_knowledge_units as crud_final_ucs
 import crud.final_knowledge_relationships as crud_final_rels
 import crud.generated_ucs_raw as crud_generated_ucs_raw
 import crud.knowledge_unit_evaluations_batch as crud_knowledge_unit_evaluations_batch
+import crud.pipeline_run as crud_runs
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -98,52 +99,155 @@ DEFAULT_OUTPUT_COLUMNS = {
 
 # --- Funções de Tarefa do DAG ---
 def task_prepare_origins(run_id: str, **context):
-    """Tarefa 1: Prepara e salva uc_origins.parquet para um run_id (ou padrão)."""
-    logging.info(f"--- TASK: prepare_origins (run_id={run_id}) ---")
-    # Idempotência: se já houver origens instaladas, pular
-    with get_session() as db:
-        existing = crud_knowledge_unit_origins.get_knowledge_unit_origins(db, run_id)
-        if existing:
-            logging.info(f"Origem já existe para run_id={run_id}, pulando.")
-            return
-    try:
-        base_input, s1, *_ = _get_dirs(run_id)
-        entities_df = load_dataframe(base_input, "entities")
-        reports_df = load_dataframe(base_input, "community_reports")
-        if entities_df is None and reports_df is None:
-            raise ValueError("Inputs entities/reports não carregados")
-        origins = prepare_uc_origins(entities_df, reports_df)
-        if not origins:
-            logging.warning("Nenhuma origem preparada.")
-            origins = []
-        with get_session() as db:
-            crud_knowledge_unit_origins.add_knowledge_unit_origins(db, run_id, origins)
+    """
+    Tarefa 1: Prepara origens de UC e ingere outputs do GraphRAG no banco de dados.
 
-        # Base output directory for this run
-        base_input, *_ = _get_dirs(run_id)
-        output_dir = base_input
-        # Map table names to CRUD functions
-        table_crud_map = {
-            'communities': crud_graphrag_communities.add_communities,
-            'community_reports': crud_graphrag_community_reports.add_community_reports,
-            'documents': crud_graphrag_documents.add_documents,
-            'entities': crud_graphrag_entities.add_entities,
-            'relationships': crud_graphrag_relationships.add_relationships,
-            'text_units': crud_graphrag_text_units.add_text_units,
-        }
-        with get_session() as db:
-            for table_name, add_func in table_crud_map.items():
-                parquet_path = output_dir / f"{table_name}.parquet"
-                if parquet_path.is_file():
-                    try:
-                        df = pd.read_parquet(parquet_path)
-                        records = df.to_dict('records')
-                        add_func(db, run_id, records)
-                    except Exception:
-                        logging.exception(f"Falha ao ingestar '{table_name}' para run_id={run_id}")
-    except Exception:
-        logging.exception("Falha na task_prepare_origins")
-        raise
+    Garante atomicidade das operações de banco de dados para esta task.
+    Levanta ValueError se inputs essenciais (entities/reports Parquet)
+    ou outputs esperados do GraphRAG estiverem ausentes ou vazios,
+    assumindo que o GraphRAG deveria ter rodado ou já existia.
+    """
+    logging.info(f"--- TASK: prepare_origins (run_id={run_id}) ---")
+    task_successful = False
+
+    with get_session() as db:
+        try:
+            # Determinar caminhos
+            base_input, s1, *_ = _get_dirs(run_id)
+            graphrag_output_dir = base_input # Diretório onde o GraphRAG salva os .parquet
+
+            # Verificar se o GraphRAG foi pulado (pela conf do DAG)
+            dag_run = context.get('dag_run')
+            skip_graphrag = dag_run and dag_run.conf.get('skip_graphrag', False)
+            logging.info(f"GraphRAG foi pulado nesta execução? {'Sim' if skip_graphrag else 'Não'}")
+
+            # --- Preparação das Origens de UC ---
+            # Verificar idempotência antes de tentar preparar/inserir
+            existing_origins = crud_knowledge_unit_origins.get_knowledge_unit_origins(db, run_id)
+            if existing_origins:
+                logging.info(f"Origens de UC já existem para run_id={run_id} no banco. Pulando preparação e adição.")
+            else:
+                logging.info("Preparando novas origens de UC...")
+                # Carregar dados base para origens (Entities e Reports)
+                entities_df = load_dataframe(graphrag_output_dir, "entities")
+                reports_df = load_dataframe(graphrag_output_dir, "community_reports")
+
+                # Validar se os DFs base para origens foram carregados
+                # Se o GraphRAG NÃO foi pulado, esses arquivos DEVEM existir.
+                if not skip_graphrag:
+                    if entities_df is None:
+                        raise ValueError(f"Erro crítico: entities.parquet não encontrado em {graphrag_output_dir}, mas GraphRAG não foi pulado.")
+                    if reports_df is None:
+                         raise ValueError(f"Erro crítico: community_reports.parquet não encontrado em {graphrag_output_dir}, mas GraphRAG não foi pulado.")
+                    # Validar se não estão vazios
+                    if entities_df.empty:
+                        raise ValueError(f"Erro crítico: entities.parquet está vazio em {graphrag_output_dir}.")
+                    # reports_df pode ser vazio em alguns casos, talvez ser menos estrito aqui? Por ora, vamos exigir.
+                    if reports_df.empty:
+                         raise ValueError(f"Erro crítico: community_reports.parquet está vazio em {graphrag_output_dir}.")
+
+                # Se o GraphRAG FOI pulado, mas os arquivos ainda não existem (estranho), falhar também.
+                if skip_graphrag and (entities_df is None or reports_df is None):
+                     raise ValueError(f"Erro crítico: GraphRAG foi pulado, mas entities/reports .parquet não encontrados em {graphrag_output_dir}.")
+                if skip_graphrag and (entities_df.empty or reports_df.empty):
+                    raise ValueError(f"Erro crítico: GraphRAG foi pulado, mas entities/reports .parquet estão vazios em {graphrag_output_dir}.")
+
+
+                origins = prepare_uc_origins(entities_df, reports_df) # Assume que esta função não falha se DFs são válidos
+                if not origins:
+                    # Isso pode acontecer se entities/reports não gerarem origens? Se sim, é warning. Se não, erro.
+                    # Vamos assumir que é possível e apenas logar.
+                    logging.warning("Nenhuma origem de UC foi preparada a partir dos dados carregados.")
+                    origins = [] # Garante que é uma lista
+
+                # Adicionar origens ao DB (sem commit ainda, pois add_records foi modificado)
+                logging.info(f"Adicionando {len(origins)} origens de UC ao banco de dados (pendente)...")
+                crud_knowledge_unit_origins.add_knowledge_unit_origins(db, run_id, origins)
+
+
+            # --- Ingestão dos Outputs do GraphRAG ---
+            logging.info("Iniciando ingestão de outputs do GraphRAG no banco de dados...")
+            table_crud_map = {
+                'communities': (crud_graphrag_communities.add_communities, True),
+                'community_reports': (crud_graphrag_community_reports.add_community_reports, True),
+                'documents': (crud_graphrag_documents.add_documents, True),
+                'entities': (crud_graphrag_entities.add_entities, True),
+                'relationships': (crud_graphrag_relationships.add_relationships, True),
+                'text_units': (crud_graphrag_text_units.add_text_units, True),
+            }
+
+            ingested_tables = set()
+            for table_name, (add_func, is_required) in table_crud_map.items():
+                 # Verificar idempotência: add_records com ON CONFLICT cuida disso no nível da linha.
+                 # Não precisamos verificar se a tabela já tem dados antes de chamar add_func.
+
+                parquet_path = graphrag_output_dir / f"{table_name}.parquet"
+
+                if not parquet_path.is_file():
+                    if is_required and not skip_graphrag:
+                        # Se era obrigatório e GraphRAG não foi pulado, é erro
+                        raise ValueError(f"Erro crítico: Arquivo GraphRAG '{table_name}.parquet' não encontrado em {graphrag_output_dir}, mas era esperado.")
+                    elif skip_graphrag:
+                         # Se GraphRAG foi pulado, ok não existir (assumindo que foi pulado pq já existe no DB?)
+                         # Ou talvez devêssemos verificar se já existe no DB? Por ora, apenas log.
+                         logging.info(f"Arquivo '{table_name}.parquet' não encontrado, mas GraphRAG foi pulado. Pulando ingestão.")
+                         continue # Pula para próxima tabela
+                    else:
+                        # Não era obrigatório e não foi pulado, ou era obrigatório mas foi pulado... Log warning.
+                        logging.warning(f"Arquivo '{table_name}.parquet' não encontrado em {graphrag_output_dir}. Pulando ingestão.")
+                        continue # Pula para próxima tabela
+
+                # Se o arquivo existe, tentar ler e processar
+                try:
+                    df = pd.read_parquet(parquet_path)
+                    if df.empty:
+                        if is_required and not skip_graphrag:
+                             raise ValueError(f"Erro crítico: Arquivo GraphRAG '{table_name}.parquet' está vazio em {graphrag_output_dir}, mas era esperado.")
+                        elif skip_graphrag:
+                             logging.info(f"Arquivo '{table_name}.parquet' está vazio, mas GraphRAG foi pulado. Pulando ingestão.")
+                             continue
+                        else:
+                            logging.warning(f"Arquivo '{table_name}.parquet' está vazio. Pulando ingestão.")
+                            continue
+
+                    # Se temos dados, adicionar ao DB (pendente na transação)
+                    records = df.to_dict('records')
+                    logging.debug(f"Adicionando {len(records)} registros de '{table_name}' (pendente)...")
+                    add_func(db, run_id, records) # add_records chamado internamente NÃO commita
+                    ingested_tables.add(table_name)
+
+                except Exception as read_err:
+                    # Erro lendo Parquet é sempre crítico
+                    logging.error(f"Falha ao ler/processar '{parquet_path}' para run_id={run_id}: {read_err}")
+                    raise ValueError(f"Falha ao processar arquivo {table_name}.parquet") from read_err
+
+            logging.info(f"Ingestão de {len(ingested_tables)} tabelas do GraphRAG pendente na transação: {ingested_tables}")
+
+            # --- Commit Final ---
+            # Se todas as operações (preparação de origens + ingestão GraphRAG)
+            # chegaram até aqui sem levantar exceção, commitar a transação inteira.
+            logging.info("Commitando todas as alterações da task no banco de dados...")
+            db.commit()
+            logging.info("Commit bem-sucedido.")
+            task_successful = True # Marca a task como sucesso
+
+        except Exception as e:
+            # Se qualquer erro ocorreu (ValueError, erro de DB, erro de leitura, etc.)
+            logging.error(f"Erro durante task_prepare_origins para run_id={run_id}: {e}", exc_info=True) # Adiciona traceback ao log
+            logging.info("Fazendo rollback das alterações da transação...")
+            db.rollback()
+            logging.info("Rollback concluído.")
+            # Re-levanta a exceção para que o Airflow marque a task como falha
+            raise
+
+    # Log final fora do bloco `with`
+    if task_successful:
+        logging.info(f"--- TASK prepare_origins CONCLUÍDA com sucesso (run_id={run_id}) ---")
+    else:
+        # Este log só será atingido se a exceção for capturada fora deste escopo
+        # (o que não deve acontecer com o 'raise' dentro do except)
+        # Mas por segurança:
+        logging.error(f"--- TASK prepare_origins FALHOU (run_id={run_id}) ---")
 
 def task_submit_uc_generation_batch(run_id: str, **context):
     """Tarefa 2: Prepara JSONL e submete batch de geração UC para um run_id."""
@@ -268,53 +372,90 @@ task_wait_and_process_batch = task_wait_and_process_batch_generic
 
 
 def task_define_relationships(run_id: str, **context):
-    """Tarefa: Define relações REQUIRES e EXPANDS usando Builders para um run_id."""
+    """
+    Tarefa: Define relações REQUIRES e EXPANDS usando Builders e salva
+    na tabela intermediária, garantindo atomicidade.
+
+    Levanta erro se os inputs necessários do banco (UCs geradas, dados GraphRAG)
+    não forem encontrados ou se ocorrer um erro durante a construção/salvamento
+    das relações.
+    """
     logging.info(f"--- TASK: define_relationships (run_id={run_id}) ---")
-    # Idempotência: se já existir relações intermediárias, pular
+    task_successful = False
+
+    # Abrir a sessão UMA VEZ para toda a task
     with get_session() as db:
-        existing = crud_rel_intermediate.get_knowledge_relationships_intermediate(db, run_id)
-        if existing:
-            logging.info(f"Relações intermediárias já existem para run_id={run_id}, pulando.")
-            return
-    try:
-        # Load generated UCs and Graphrag inputs via CRUD
-        _, _, s2, s3, *_ = _get_dirs(run_id)
-        with get_session() as db:
-            generated_records = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
-            graphrag_rels = crud_graphrag_relationships.get_relationships(db, run_id)
-            graphrag_ents = crud_graphrag_entities.get_entities(db, run_id)
-        # Convert to DataFrame
-        generated_df = pd.DataFrame(generated_records)
-        relationships_df = pd.DataFrame(graphrag_rels)
-        entities_df = pd.DataFrame(graphrag_ents)
-        # Handle no UCs case
-        if generated_df.empty:
-            logging.warning("Nenhuma UC para definir relações.")
-            with get_session() as db:
-                crud_rel_intermediate.add_knowledge_relationships_intermediate(db, run_id, [])
-            return
-        # Prepare records and context for builders
-        generated_ucs = generated_df.to_dict('records')
-        ctx = {
-            'generated_ucs': generated_ucs,
-            'relationships_df': relationships_df,
-            'entities_df': entities_df
-        }
-        # Encadeia builders: REQUIRES -> EXPANDS
-        builder = RequiresBuilder()
-        builder.set_next(ExpandsBuilder())
-        all_rels = builder.build([], ctx)
-        # Persiste resultados na tabela intermediária
-        # Registra todas as relações (pode ser lista vazia)
-        with get_session() as db:
-            crud_rel_intermediate.add_knowledge_relationships_intermediate(db, run_id, all_rels or [])
-    except Exception:
-        logging.exception("Falha na task_define_relationships")
-        raise
+        try:
+            # 1. Verificar idempotência para relações intermediárias
+            existing_rels = crud_rel_intermediate.get_knowledge_relationships_intermediate(db, run_id)
+            if existing_rels:
+                logging.info(f"Relações intermediárias já existem para run_id={run_id}. Pulando definição.")
+                task_successful = True
+
+            else:
+                 # 2. Carregar dados de entrada necessários do banco
+                logging.info("Carregando dados necessários do banco para definir relações...")
+                generated_records = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
+                graphrag_rels_records = crud_graphrag_relationships.get_relationships(db, run_id)
+                graphrag_ents_records = crud_graphrag_entities.get_entities(db, run_id)
+
+                # Validar se os dados essenciais foram carregados
+                if not generated_records:
+                    raise ValueError(f"Erro crítico: Nenhum registro de UCs geradas (generated_ucs_raw) encontrado no banco para run_id={run_id}.")
+
+                if not graphrag_rels_records:
+                     logging.warning(f"Nenhum registro de relações GraphRAG (graphrag_relationships) encontrado para run_id={run_id}. Relações EXPANDS não serão geradas.")
+                if not graphrag_ents_records:
+                     logging.warning(f"Nenhum registro de entidades GraphRAG (graphrag_entities) encontrado para run_id={run_id}. Relações EXPANDS podem falhar ou ser incompletas.")
+
+
+                # 3. Preparar dados para os builders
+                generated_df = pd.DataFrame(generated_records)
+                relationships_df = pd.DataFrame(graphrag_rels_records) # Pode ser vazio
+                entities_df = pd.DataFrame(graphrag_ents_records) # Pode ser vazio
+
+                generated_ucs = generated_df.to_dict('records')
+                ctx = {
+                    'generated_ucs': generated_ucs,
+                    'relationships_df': relationships_df,
+                    'entities_df': entities_df
+                }
+
+                # 4. Construir relações usando a cadeia de builders
+                logging.info("Construindo relações REQUIRES e EXPANDS...")
+                builder = RequiresBuilder()
+                builder.set_next(ExpandsBuilder())
+
+                all_rels = builder.build([], ctx) # Começa com lista vazia
+                logging.info(f"Total de {len(all_rels)} relações intermediárias construídas.")
+
+                # 5. Persistir resultados na tabela intermediária (pendente na transação)
+                logging.info("Adicionando relações intermediárias ao banco de dados (pendente)...")
+                crud_rel_intermediate.add_knowledge_relationships_intermediate(db, run_id, all_rels or [])
+
+                # 6. Commitar a transação se tudo ocorreu bem
+                db.commit()
+                task_successful = True
+
+        except Exception as e:
+            # 7. Se qualquer erro ocorreu
+            logging.error(f"Erro durante task_define_relationships para run_id={run_id}: {e}", exc_info=True)
+            logging.info("Fazendo rollback das alterações da transação...")
+            db.rollback()
+            logging.info("Rollback concluído.")
+            raise
+
+    # Log final fora do bloco `with`
+    if task_successful:
+        log_message = "CONCLUÍDA com sucesso"
+        if 'existing_rels' in locals() and existing_rels:
+             log_message = "CONCLUÍDA (Idempotente - relações já existiam)"
+        logging.info(f"--- TASK define_relationships {log_message} (run_id={run_id}) ---")
+    else:
+        logging.error(f"--- TASK define_relationships FALHOU (run_id={run_id}) ---")
 
 def task_submit_difficulty_batch(run_id: str, **context):
     """Tarefa: Prepara e submete batch de avaliação de dificuldade para um run_id."""
-    # ... (lógica como antes, lendo de stage2_output_ucs_dir) ...
     logging.info("--- TASK: submit_difficulty_batch ---")
     # Idempotência: se já houver avaliações, pular
     with get_session() as db:
@@ -392,92 +533,261 @@ def task_submit_difficulty_batch(run_id: str, **context):
 
 
 def task_finalize_outputs(run_id: str, **context):
-    """Tarefa: Combina UCs com avaliações e salva outputs finais para um run_id."""
-    # ... (lógica como antes, lendo de stage2, stage3, stage4, salvando em stage5) ...
-    # Adapta _calculate_final_difficulty_from_raw se necessário
-    logging.info("--- TASK: finalize_outputs ---")
-    # Idempotência: se já houver UCs finais, pular
+    """
+    Tarefa: Combina UCs geradas com avaliações de dificuldade,
+    calcula scores finais, salva UCs e Relações finais no banco,
+    e atualiza o status do PipelineRun para 'success', garantindo atomicidade.
+
+    Levanta erro se inputs cruciais (UCs geradas) não forem encontrados no banco,
+    ou se ocorrer um erro durante o processamento ou salvamento final.
+    """
+    logging.info(f"--- TASK: finalize_outputs (run_id={run_id}) ---")
+    task_successful = False
+    final_log_message = "FALHOU" # Default log message
+
     with get_session() as db:
-        existing = crud_final_ucs.get_final_knowledge_units(db, run_id)
-        if existing:
-            logging.info(f"Finalização já concluída para run_id={run_id}, pulando.")
-            return
-    try:
-        # Define diretórios e carrega dados via CRUD
-        _, _, s2, s3, s4, s5, _ = _get_dirs(run_id)
-        with get_session() as db:
-            generated_records = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
-            rels_intermed_records = crud_rel_intermediate.get_knowledge_relationships_intermediate(db, run_id)
-            evals_records = crud_knowledge_unit_evaluations_batch.get_knowledge_unit_evaluations_batch(db, run_id)
+        try:
+            # 1. Verificar idempotência para outputs finais (checando UCs finais)
+            # Também verificamos se o status já é 'success', pois não faria sentido rodar de novo.
+            run_status = None
+            existing_run = crud_runs.get_run(db, run_id)
+            if existing_run:
+                run_status = existing_run.status
 
-        if not generated_records:
-            raise ValueError("UCs brutas não encontradas.")
+            existing_final_ucs = crud_final_ucs.get_final_knowledge_units(db, run_id)
 
-        final_ucs_list: List[Dict[str, Any]] = []
-        generated_ucs_list = generated_records
+            if existing_final_ucs and run_status == 'success':
+                logging.info(f"Outputs finais já existem e PipelineRun status é 'success' para run_id={run_id}. Pulando finalização.")
+                task_successful = True
+                final_log_message = "CONCLUÍDA (Idempotente - outputs e status já OK)"
 
-        if evals_records:
-            logging.info("Recalculando scores finais de dificuldade...")
-            final_ucs_list, evaluated_count, min_evals_met_count = _calculate_final_difficulty_from_raw(
-                generated_ucs_list, evals_records
-            )
-        else:
-            logging.warning("Avaliações brutas não encontradas. UCs finais sem scores.")
-            final_ucs_list = []
-            for uc in generated_ucs_list:
-                uc["difficulty_score"] = None
-                uc["difficulty_justification"] = "Não avaliado"
-                uc["evaluation_count"] = 0
-                final_ucs_list.append(uc)
+            elif existing_final_ucs and run_status != 'success':
+                 logging.warning(f"Outputs finais existem, mas status do PipelineRun ({run_status}) não é 'success' para run_id={run_id}. Tentando apenas atualizar status...")
+                 try:
+                     # Assumindo que update_run_status agora tem commit=True por padrão
+                     crud_runs.update_run_status(db, run_id, status='success')
+                     logging.info("Status do PipelineRun atualizado para 'success'.")
+                     task_successful = True
+                     final_log_message = "CONCLUÍDA (Outputs já existiam, status atualizado)"
+                 except Exception as status_err:
+                      logging.error(f"Falha ao tentar atualizar status para 'success' (outputs já existiam): {status_err}", exc_info=True)
+                      final_log_message = "CONCLUÍDA (Outputs já existiam, FALHA ao atualizar status)"
 
-        if not final_ucs_list:
-            raise ValueError("Lista final de UCs vazia.")
-        # Persiste final UCs na tabela
-        with get_session() as db:
-            crud_final_ucs.add_final_knowledge_units(db, run_id, final_ucs_list)
+            else:
+                 logging.info("Outputs finais não encontrados ou run status não é 'success'. Procedendo com a finalização...")
 
-        # Persiste final relationships na tabela
-        with get_session() as db:
-            crud_final_rels.add_final_knowledge_relationships(db, run_id, rels_intermed_records)
+                 # 2. Carregar dados de entrada necessários do banco
+                 logging.info("Carregando dados intermediários do banco para finalização...")
+                 generated_records = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
+                 rels_intermed_records = crud_rel_intermediate.get_knowledge_relationships_intermediate(db, run_id)
+                 evals_records = crud_knowledge_unit_evaluations_batch.get_knowledge_unit_evaluations_batch(db, run_id)
 
-    except Exception as e:
-        logging.exception("Falha na task_finalize_outputs")
-        raise
+                 # Validar input essencial: UCs geradas brutas
+                 if not generated_records:
+                     raise ValueError(f"Erro crítico: Nenhum registro de UCs geradas (generated_ucs_raw) encontrado no banco para run_id={run_id}.")
+
+                 # Logs informativos sobre inputs opcionais
+                 if not rels_intermed_records:
+                     logging.warning(f"Nenhum registro de relações intermediárias encontrado para run_id={run_id}. A tabela final_knowledge_relationships ficará vazia.")
+                     rels_intermed_records = []
+                 if not evals_records:
+                     logging.warning(f"Nenhuma avaliação de dificuldade bruta encontrada para run_id={run_id}. UCs finais não terão scores.")
+                     evals_records = []
+
+                 # 3. Processar avaliações e calcular scores finais
+                 final_ucs_list: List[Dict[str, Any]] = []
+                 generated_ucs_list = generated_records
+
+                 if evals_records:
+                     logging.info("Calculando scores finais de dificuldade...")
+                     final_ucs_list, evaluated_count, min_evals_met_count = _calculate_final_difficulty_from_raw(
+                         generated_ucs_list, evals_records
+                     )
+                     logging.info(f"Cálculo de dificuldade concluído: {evaluated_count} UCs com score, {min_evals_met_count} atingiram o mínimo.")
+                 else:
+                     logging.info("Nenhuma avaliação encontrada, marcando UCs finais como não avaliadas.")
+                     for uc in generated_ucs_list:
+                         uc_copy = uc.copy()
+                         uc_copy["difficulty_score"] = None
+                         uc_copy["difficulty_justification"] = "Não avaliado"
+                         uc_copy["evaluation_count"] = 0
+                         final_ucs_list.append(uc_copy)
+
+                 if not final_ucs_list:
+                     raise ValueError("Erro inesperado: Lista final de UCs vazia após processamento.")
+
+                 # 4. Adicionar UCs Finais ao banco (pendente)
+                 logging.info(f"Adicionando {len(final_ucs_list)} UCs finais ao banco (pendente)...")
+                 crud_final_ucs.add_final_knowledge_units(db, run_id, final_ucs_list)
+
+                 # 5. Adicionar Relações Finais ao banco (pendente)
+                 logging.info(f"Adicionando {len(rels_intermed_records)} relações finais ao banco (pendente)...")
+                 crud_final_rels.add_final_knowledge_relationships(db, run_id, rels_intermed_records)
+
+                 # 6. Atualizar status do PipelineRun para 'success' (pendente)
+                 logging.info("Atualizando status do PipelineRun para 'success' (pendente)...")
+                 # Chama a função refatorada com commit=False
+                 crud_runs.update_run_status(db, run_id, status='success', commit=False)
+
+                 # 7. Commitar TODAS as alterações (UCs finais, Rels finais, Status do Run)
+                 logging.info("Commitando outputs finais e atualização de status do Run...")
+                 db.commit()
+                 logging.info("Commit atômico bem-sucedido.")
+                 task_successful = True
+                 final_log_message = "CONCLUÍDA com sucesso"
+
+        except Exception as e:
+            # 8. Se qualquer erro ocorreu ANTES do commit final
+            logging.error(f"Erro durante task_finalize_outputs para run_id={run_id}: {e}", exc_info=True)
+            logging.info("Fazendo rollback das alterações da transação (outputs finais, status)...")
+            db.rollback()
+            logging.info("Rollback concluído.")
+            final_log_message = "FALHOU"
+            raise
+
+    # Log final (a mensagem é definida dentro do try/except/if)
+    log_level = logging.INFO if task_successful else logging.ERROR
+    logging.log(log_level, f"--- TASK finalize_outputs {final_log_message} (run_id={run_id}) ---")
     
 
 def task_process_uc_generation_batch(run_id: str, batch_id: str, **context) -> bool:
-    """Processa resultados de geração UC para um run_id e batch_id."""
+    """
+    Processa resultados de geração UC para um run_id e batch_id,
+    salvando no banco de forma atômica.
+    """
     logging.info(f"--- TASK: process_uc_generation_batch (run_id={run_id}, batch_id={batch_id}) ---")
-    # Define diretórios de saída
-    _, _, s2, _, _, _, _ = _get_dirs(run_id)
-    # Checa status do batch
-    status, output_file_id, error_file_id = check_batch_status(batch_id)
-    if status != 'completed':
-        raise ValueError(f"Batch {batch_id} not completed (status: {status})")
-    # Processa resultados do batch
-    return process_batch_results(
-        batch_id,
-        output_file_id,
-        error_file_id,
-        s2,
-        GENERATED_UCS_RAW,
-    )
+    task_successful = False
+    final_log_message = "FALHOU"
+
+    # Se for o ID falso de idempotência, sucesso imediato
+    if batch_id == "fake_id_for_indepotency":
+         logging.info("Batch ID é 'fake_id_for_indepotency', indicando etapa anterior pulada. Sucesso idempotente.")
+         task_successful = True
+         final_log_message = "CONCLUÍDA (Idempotente - batch anterior pulado)"
+         logging.info(f"--- TASK process_uc_generation_batch {final_log_message} (run_id={run_id}) ---")
+         return True
+
+
+    # Abrir sessão única para a task
+    with get_session() as db:
+        try:
+            # 1. Checar status do batch
+            logging.info(f"Verificando status final do batch {batch_id}...")
+            status, output_file_id, error_file_id = check_batch_status(batch_id)
+
+            if status != 'completed':
+                raise ValueError(f"Batch {batch_id} não está 'completed' (status: {status}) ao iniciar processamento.")
+            if not output_file_id:
+                 raise ValueError(f"Batch {batch_id} está 'completed' mas não possui output_file_id.")
+
+            logging.info(f"Batch {batch_id} confirmado como 'completed'. output_file_id: {output_file_id}")
+
+            # 2. Chamar process_batch_results passando a sessão db
+            logging.info("Iniciando processamento e adição ao banco (pendente)...")
+
+            _, _, s2, _, _, _, _ = _get_dirs(run_id)
+            
+            processing_ok = process_batch_results(
+                batch_id=batch_id,
+                output_file_id=output_file_id,
+                error_file_id=error_file_id,
+                stage_output_dir=s2,
+                output_filename=GENERATED_UCS_RAW,
+                run_id=run_id,
+                db=db
+            )
+
+            # 3. Verificar resultado e commitar/rollback
+            if processing_ok:
+                logging.info("Processamento do batch bem-sucedido. Commitando transação...")
+                db.commit()
+                task_successful = True
+                final_log_message = "CONCLUÍDA com sucesso"
+            else:
+                logging.error("process_batch_results indicou falha. Fazendo rollback...")
+                db.rollback()
+                # Levantar erro para falhar a task do Airflow
+                raise RuntimeError(f"Falha no processamento do arquivo de resultados do batch {batch_id}.")
+
+        except Exception as e:
+            # Captura erros do check_batch_status, process_batch_results ou commit
+            logging.error(f"Erro durante task_process_uc_generation_batch para run_id={run_id}, batch_id={batch_id}: {e}", exc_info=True)
+            logging.info("Fazendo rollback das alterações da transação (se houver)...")
+            # Rollback é seguro mesmo que nada tenha sido adicionado
+            db.rollback()
+            final_log_message = "FALHOU"
+            raise
+
+    # Log final
+    log_level = logging.INFO if task_successful else logging.ERROR
+    logging.log(log_level, f"--- TASK process_uc_generation_batch {final_log_message} (run_id={run_id}) ---")
+    return task_successful
+
 
 def task_process_difficulty_batch(run_id: str, batch_id: str, **context) -> bool:
-    """Processa resultados de avaliação de dificuldade para um run_id e batch_id."""
+    """
+    Processa resultados de avaliação de dificuldade para um run_id e batch_id,
+    salvando no banco de forma atômica.
+    """
     logging.info(f"--- TASK: process_difficulty_batch (run_id={run_id}, batch_id={batch_id}) ---")
-    # Define diretórios de saída de avaliação
-    _, _, _, _, s4, _, _ = _get_dirs(run_id)
-    # Checa status do batch
-    status, output_file_id, error_file_id = check_batch_status(batch_id)
-    if status != 'completed':
-        raise ValueError(f"Batch {batch_id} not completed (status: {status})")
-    # Processa e salva parquet de avaliações brutas
-    return process_batch_results(
-        batch_id,
-        output_file_id,
-        error_file_id,
-        s4,
-        UC_EVALUATIONS_RAW,
-    )
+    task_successful = False
+    final_log_message = "FALHOU"
+
+    # Se for o ID falso de idempotência, sucesso imediato
+    if batch_id == "fake_id_for_indepotency":
+         logging.info("Batch ID é 'fake_id_for_indepotency', indicando etapa anterior pulada. Sucesso idempotente.")
+         task_successful = True
+         final_log_message = "CONCLUÍDA (Idempotente - batch anterior pulado)"
+         logging.info(f"--- TASK process_difficulty_batch {final_log_message} (run_id={run_id}) ---")
+         return True
+
+    with get_session() as db:
+        try:
+            # 1. Checar status do batch
+            logging.info(f"Verificando status final do batch {batch_id}...")
+            status, output_file_id, error_file_id = check_batch_status(batch_id)
+
+            if status != 'completed':
+                raise ValueError(f"Batch {batch_id} não está 'completed' (status: {status}) ao iniciar processamento.")
+            if not output_file_id:
+                 raise ValueError(f"Batch {batch_id} está 'completed' mas não possui output_file_id.")
+
+            logging.info(f"Batch {batch_id} confirmado como 'completed'. output_file_id: {output_file_id}")
+
+            # 2. Chamar process_batch_results passando a sessão db
+            logging.info("Iniciando processamento e adição ao banco (pendente)...")
+            # Precisa do diretório de stage e filename
+            _, _, _, _, s4, _, _ = _get_dirs(run_id)
+            processing_ok = process_batch_results(
+                batch_id=batch_id,
+                output_file_id=output_file_id,
+                error_file_id=error_file_id,
+                stage_output_dir=s4,
+                output_filename=UC_EVALUATIONS_RAW,
+                run_id=run_id,
+                db=db
+            )
+
+            # 3. Verificar resultado e commitar/rollback
+            if processing_ok:
+                logging.info("Processamento do batch bem-sucedido. Commitando transação...")
+                db.commit()
+                task_successful = True
+                final_log_message = "CONCLUÍDA com sucesso"
+            else:
+                logging.error("process_batch_results indicou falha. Fazendo rollback...")
+                db.rollback()
+                raise RuntimeError(f"Falha no processamento do arquivo de resultados do batch {batch_id}.")
+
+        except Exception as e:
+            logging.error(f"Erro durante task_process_difficulty_batch para run_id={run_id}, batch_id={batch_id}: {e}", exc_info=True)
+            logging.info("Fazendo rollback das alterações da transação (se houver)...")
+            db.rollback()
+            final_log_message = "FALHOU"
+            raise
+
+    # Log final
+    log_level = logging.INFO if task_successful else logging.ERROR
+    logging.log(log_level, f"--- TASK process_difficulty_batch {final_log_message} (run_id={run_id}) ---")
+    return task_successful
         

@@ -32,21 +32,13 @@ def create_run(
     db.refresh(run)
     return run
 
-
-def update_run_status(
-    db: Session,
-    run_id: str,
-    status: str,
-    finished_at: Optional[datetime] = None,
-) -> models.PipelineRun:
-    """Update status (and finished_at) of an existing PipelineRun."""
+def update_run_status(db: Session, run_id: str, status: str, finished_at: Optional[datetime] = None, commit: bool = True) -> models.PipelineRun:
     run = get_run(db, run_id)
     if not run:
         raise ValueError(f"PipelineRun '{run_id}' not found")
     run.status = status
-    # Set finished_at to now if not provided
     run.finished_at = finished_at if finished_at is not None else datetime.utcnow()
-    db.add(run)
-    db.commit()
-    db.refresh(run)
+    db.add(run) # Adiciona à sessão
+    if commit:
+        db.commit()
     return run
