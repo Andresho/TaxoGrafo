@@ -1,31 +1,38 @@
 import logging
 import json
 import uuid
-import scripts.pipeline_tasks as pt
 from scripts.llm_client import get_llm_strategy
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Tuple, Optional
-from pathlib import Path
 from sqlalchemy.orm import Session
 from crud.generated_ucs_raw import add_generated_ucs_raw
 from crud.knowledge_unit_evaluations_batch import add_knowledge_unit_evaluations_batch
+from scripts.constants import GENERATED_UCS_RAW, UC_EVALUATIONS_RAW
+
 
 def check_batch_status(batch_id: str) -> Tuple[str, Optional[str], Optional[str]]:
-    """Consulta status do batch via LLM strategy e retorna (status, output_file_id, error_file_id)."""
+    """
+    Queries the status of an LLM batch job.
+    Returns a tuple: (status, output_file_id, error_file_id).
+    """
     llm = get_llm_strategy()
     return llm.get_batch_status(batch_id)
 
-# --- Template Method para processar batches ---
+
 class BaseBatchProcessor(ABC):
-    """Template Method para processar batches OpenAI."""
+    """
+    Abstract Base Class for processing LLM batch job results.
+    Utilizes a template method pattern for the main `process` logic.
+    """
+
     def __init__(
-        self,
-        batch_id: str,
-        output_file_id: str,
-        error_file_id: str,
-        stage_output_dir,
-        output_filename: str,
-        run_id: str
+            self,
+            batch_id: str,
+            output_file_id: str,
+            error_file_id: Optional[str],
+            stage_output_dir: Any,  # Type can be Path; currently not strictly used after refactor
+            output_filename: str,
+            run_id: str
     ):
         self.batch_id = batch_id
         self.output_file_id = output_file_id
@@ -33,231 +40,377 @@ class BaseBatchProcessor(ABC):
         self.stage_output_dir = stage_output_dir
         self.output_filename = output_filename
         self.run_id = run_id
+        self.llm = get_llm_strategy()
 
     def process(self, db: Session) -> bool:
         """
-        Processa resultados do batch usando LLM strategy e persiste no banco
-        usando a SESSÃO fornecida. Retorna True se bem sucedido.
+        Main processing logic for batch results.
+        Downloads the output file, processes each line, and prepares data for DB saving.
+        Actual DB saving (add to session) is delegated to `_save_to_db`.
+        The provided `db` Session is used for DB operations; this method does NOT commit.
+        Returns True if file processing and DB preparation were successful, False otherwise.
         """
-        llm = get_llm_strategy()
-        logging.info(f"Processando resultados do Batch {self.batch_id} (Output File: {self.output_file_id}) para run_id {self.run_id}...")
+        logging.info(
+            f"Processing results for Batch ID: {self.batch_id}, Run ID: {self.run_id}, Output File: {self.output_file_id}")
         processed_data: List[Dict[str, Any]] = []
-        errors_in_batch = 0
-        all_ok = True # Indica se o processamento do ARQUIVO foi ok
-        save_needed = False # Indica se há dados para salvar no DB
+        total_line_errors = 0
+        lines_resulting_in_data = 0
+        overall_success = True
 
         try:
             if self.error_file_id:
-                self._log_error_file()
+                self._log_error_file_content()
 
-            # Baixa conteúdo via LLM strategy
-            content_bytes = llm.read_file(self.output_file_id)
+            logging.debug(f"Attempting to read file: {self.output_file_id}")
+            content_bytes = self.llm.read_file(self.output_file_id)
             result_content = content_bytes.decode('utf-8')
-            logging.info(f"Arquivo de resultado {self.output_file_id} baixado.")
+            logging.info(f"Successfully downloaded result file {self.output_file_id} for batch {self.batch_id}.")
 
-            for line in result_content.strip().split('\n'):
-                errors_in_batch += self._process_line(line, processed_data)
+            lines = result_content.strip().split('\n')
+            if not lines or (len(lines) == 1 and not lines[0].strip()):
+                logging.warning(f"Result file for batch {self.batch_id} is empty or contains only whitespace.")
+                return True
 
-            logging.info(f"Processamento arquivo concluído. {len(processed_data)} registros processados. {errors_in_batch} erros em linhas.")
+            for line_number, line_content in enumerate(lines, 1):
+                if not line_content.strip():
+                    logging.debug(f"Skipping blank line {line_number} in batch {self.batch_id}.")
+                    continue
+
+                items_from_line, errors_in_line = self._process_single_line_wrapper(line_content, line_number)
+                if items_from_line:
+                    processed_data.extend(items_from_line)
+                    lines_resulting_in_data += 1
+                if errors_in_line > 0:
+                    total_line_errors += errors_in_line
+
+            logging.info(
+                f"Batch file processing complete for batch {self.batch_id}. "
+                f"Extracted {len(processed_data)} items from {lines_resulting_in_data} lines. "
+                f"Encountered {total_line_errors} errors in individual lines."
+            )
 
             if processed_data:
-                save_needed = True # Há dados para salvar no banco
-            elif errors_in_batch > 0:
-                logging.error("Nenhum dado processado com sucesso do batch.")
-                all_ok = False
-            else:
-                logging.warning("Nenhum dado encontrado no arquivo de resultados do batch.")
-                all_ok = True # Arquivo vazio não é erro, mas nada a salvar
-
-            # chamar o método de salvamento passando a sessão db
-            if all_ok and save_needed:
                 try:
-                    logging.info(f"Adicionando {len(processed_data)} registros ao banco (pendente na sessão)...")
-                    # Passa a sessão db recebida
-                    self._save_to_db(db, processed_data)
-                except Exception as db_err:
-                    # Se o salvamento FALHAR (ex: erro no add_records),
-                    # logamos e retornamos False para que o chamador faça rollback.
-                    logging.exception("Falha ao adicionar dados do batch à sessão do banco de dados.")
-                    return False
+                    logging.info(
+                        f"Adding {len(processed_data)} processed items to the database session (run_id: {self.run_id})...")
+                    self._save_to_db(db, processed_data)  # Uses the provided db session
+                except Exception:  # Catch specific DB errors if possible
+                    logging.exception(
+                        f"Database error while trying to save processed data for batch {self.batch_id}, run_id {self.run_id}.")
+                    overall_success = False  # DB save failure means overall failure
+            elif total_line_errors > 0 and lines_resulting_in_data == 0:
+                logging.error(
+                    f"No data successfully processed from batch {self.batch_id} due to errors in all relevant lines.")
+                overall_success = False  # All lines had errors, no data
+            # If no processed_data and no total_line_errors, it means lines were valid but parse_inner found no items (can be valid).
 
-            # Se chegamos aqui, ou tudo correu bem, ou o arquivo estava vazio/sem dados válidos.
-            # Retorna True se o processamento do arquivo não teve erros fatais.
-            return all_ok
+        except Exception:
+            logging.exception(
+                f"Critical error during file download or main processing for batch {self.batch_id}, output file {self.output_file_id}.")
+            overall_success = False
 
-        except Exception as file_err:
-            # Falha ao baixar ou erro inesperado no processamento do arquivo
-            logging.exception(f"Falha crítica ao baixar/processar arquivo {self.output_file_id} do batch {self.batch_id}.")
-            return False
+        return overall_success
 
-
-    def _log_error_file(self):
-        """Loga o conteúdo de erros do batch usando LLM strategy."""
-        llm = get_llm_strategy()
+    def _log_error_file_content(self):
+        """Logs the content of the error file associated with the batch, if it exists."""
+        if not self.error_file_id:
+            return
+        logging.info(f"Attempting to read error file {self.error_file_id} for batch {self.batch_id}.")
         try:
-            error_bytes = llm.read_file(self.error_file_id)
+            error_bytes = self.llm.read_file(self.error_file_id)
             error_content = error_bytes.decode('utf-8')
-            logging.warning(f"Erros individuais reportados no arquivo de erro {self.error_file_id} do batch {self.batch_id}:\n{error_content[:1000]}...")
-        except Exception as ef:
-            logging.error(f"Não foi possível ler o arquivo de erro {self.error_file_id}: {ef}")
+            logging.warning(
+                f"Content from error file {self.error_file_id} for batch {self.batch_id} (first 1000 chars):\n"
+                f"{error_content[:1000]}"
+            )
+        except Exception:
+            logging.exception(f"Failed to read or decode error file {self.error_file_id} for batch {self.batch_id}.")
 
-    def _process_line(self, line: str, processed_data: List[Dict[str, Any]]) -> int:
-
-        errors = 0
+    def _process_single_line_wrapper(self, line_content: str, line_number: int) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Wrapper for `_process_line_content` to catch any unexpected fatal errors
+        during the processing of a single line, allowing the batch processing to continue.
+        Returns a tuple: (list_of_processed_items_from_line, number_of_errors_in_line).
+        """
         try:
-            line_data = json.loads(line)
-            custom_id = line_data.get("custom_id", "unknown_custom_id")
+            return self._process_line_content(line_content, line_number)
+        except Exception:
+            logging.exception(
+                f"Fatal error processing line {line_number} of batch {self.batch_id} (run_id: {self.run_id}). "
+                f"Line (first 200 chars): '{line_content[:200]}'"
+            )
+            return [], 1 
 
-            origin_id = self._extract_origin_id(custom_id)
-            error = line_data.get("error")
-            if error:
-                errors += 1
-                logging.error(f"Erro na linha do batch (custom_id: {custom_id}, run_id: {self.run_id}): {error.get('message')}")
-                return errors
-            response = line_data.get("response")
-            if not response or response.get("status_code") != 200:
-                errors += 1
-                logging.warning(f"Request não OK na linha do batch (custom_id: {custom_id}, run_id: {self.run_id}): {response}")
-                return errors
-            body = response.get("body", {})
-            choice = (body.get("choices") or [{}])[0]
-            message_content = choice.get("message", {}).get("content")
-            if not message_content:
-                errors += 1
-                logging.warning(f"Resposta OK sem conteúdo na linha do batch (custom_id: {custom_id}, run_id: {self.run_id})")
-                return errors
-            content_cleaned = message_content.strip()
-            if content_cleaned.startswith("```json"):
-                content_cleaned = content_cleaned[7:-3].strip()
-            elif content_cleaned.startswith("```"):
-                content_cleaned = content_cleaned[3:-3].strip()
-            try:
-                inner_data = json.loads(content_cleaned)
-            except json.JSONDecodeError as e:
-                errors += 1
-                logging.error(f"Erro JSON decode interno na linha do batch (custom_id: {custom_id}, run_id: {self.run_id}): {e}")
-                return errors
-            # Passar origin_id e run_id se necessário para parse_inner
-            items, errs = self.parse_inner(inner_data, origin_id, self.run_id)
-            processed_data.extend(items)
-            errors += errs
-        except Exception as e:
-            errors += 1
-            logging.error(f"Erro processando linha do batch (run_id: {self.run_id}): {e}. Linha: {line[:100]}...")
-        return errors
+    def _process_line_content(self, line_content: str, line_number: int) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Parses the JSON structure of a single line from the batch output file,
+        validates the response, and delegates to `_parse_llm_response_content`.
+        Returns a tuple: (list_of_processed_items_from_line, number_of_errors_in_line).
+        Can raise JSONDecodeError if the line itself is not valid JSON.
+        """
+        line_errors = 0
+        items_from_line: List[Dict[str, Any]] = []
 
+        line_data = json.loads(line_content)  # May raise JSONDecodeError
+        custom_id = line_data.get("custom_id", f"unknown_custom_id_line_{line_number}")
+
+        # `_extract_origin_id` is called here to potentially get a more specific ID
+        # (e.g., an entity ID) if the `custom_id` format allows for it.
+        # This `extracted_id` is then passed to `_parse_llm_response_content` and `parse_inner`.
+        extracted_id = self._extract_origin_id(custom_id)
+
+        error_payload = line_data.get("error")
+        if error_payload:
+            msg = error_payload.get('message', str(error_payload))
+            logging.error(f"LLM API error on line {line_number} (custom_id: {custom_id}, run_id: {self.run_id}): {msg}")
+            return items_from_line, 1
+
+        response_payload = line_data.get("response")
+        if not response_payload or response_payload.get("status_code") != 200:
+            status = response_payload.get('status_code', 'N/A') if response_payload else 'N/A'
+            logging.warning(
+                f"Non-200 status ({status}) on line {line_number} (custom_id: {custom_id}, run_id: {self.run_id}). Response: {str(response_payload)[:200]}"
+            )
+            return items_from_line, 1
+
+        body = response_payload.get("body", {})
+        choices = body.get("choices")
+        if not choices or not isinstance(choices, list) or not choices[0]:
+            logging.warning(
+                f"Missing or invalid 'choices' in response body on line {line_number} (custom_id: {custom_id}, run_id: {self.run_id}).")
+            return items_from_line, 1
+
+        message = choices[0].get("message", {})
+        message_content_str = message.get("content")
+
+        if not message_content_str:
+            logging.warning(
+                f"No 'content' in LLM message on line {line_number} (custom_id: {custom_id}, run_id: {self.run_id}).")
+            return items_from_line, 1
+
+        parsed_items, parsing_errors = self._parse_llm_response_content(message_content_str, custom_id, extracted_id)
+        if parsed_items:
+            items_from_line.extend(parsed_items)
+        line_errors += parsing_errors
+
+        return items_from_line, line_errors
+
+    def _parse_llm_response_content(self, message_content_str: str, custom_id_from_line: str,
+                                    extracted_id_for_inner: str) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Cleans the LLM message string, parses it as JSON, and calls `parse_inner`
+        for specific data extraction logic.
+        `custom_id_from_line` is the original custom_id from the batch line for logging.
+        `extracted_id_for_inner` is the (potentially processed) ID to be passed to `parse_inner`.
+        Returns a tuple: (list_of_processed_items, number_of_parsing_errors).
+        """
+        parsed_items: List[Dict[str, Any]] = []
+        parsing_errors = 0
+
+        content_cleaned = message_content_str.strip()
+        if content_cleaned.startswith("```json"):
+            content_cleaned = content_cleaned[len("```json"):-len("```")].strip()
+        elif content_cleaned.startswith("```"):
+            content_cleaned = content_cleaned[len("```"):-len("```")].strip()
+
+        try:
+            inner_data = json.loads(content_cleaned)
+        except json.JSONDecodeError:
+            logging.error(
+                f"Failed to decode internal JSON from LLM response (custom_id: {custom_id_from_line}, run_id: {self.run_id}). "
+                f"Cleaned content (first 200 chars): '{content_cleaned[:200]}'"
+            )
+            return parsed_items, 1
+
+        try:
+            # Pass the `extracted_id_for_inner` to `parse_inner`.
+            # This `extracted_id_for_inner` will be the entity/community ID for generation tasks,
+            # or the original batch request custom_id for difficulty tasks.
+            items_from_inner, inner_errors = self.parse_inner(inner_data, extracted_id_for_inner, self.run_id)
+            if items_from_inner:
+                parsed_items.extend(items_from_inner)
+            parsing_errors += inner_errors
+        except Exception:  # Catch unexpected errors within parse_inner
+            logging.exception(
+                f"Unexpected error in 'parse_inner' for custom_id: {custom_id_from_line}, run_id: {self.run_id}.")
+            parsing_errors += 1
+
+        return parsed_items, parsing_errors
 
     def _extract_origin_id(self, custom_id: str) -> str:
-        if custom_id.startswith("gen_req_"):
-            parts = custom_id.split("_")
-            return "_".join(parts[2:-1])
-        return custom_id # Retorna o custom_id se não for padrão gen_req
+        """
+        Extracts a more specific ID (e.g., entity/community ID for generation tasks)
+        from a formatted `custom_id` string if it matches the 'gen_req_' pattern.
+        Otherwise, returns the original `custom_id`. This returned ID is then
+        passed to `parse_inner`.
+        """
+        prefix = "gen_req_"
+        if custom_id.startswith(prefix):
+            # Process the string part *after* the prefix
+            id_part_with_suffix = custom_id[len(prefix):]
+            # Split by the last underscore, assuming it separates the ID from a suffix (e.g., index)
+            parts = id_part_with_suffix.rsplit('_', 1)
+            if len(parts) > 0 and parts[0]:  # Ensure there's an ID part and it's not empty
+                actual_id = parts[0]
+                return actual_id
+            else:  # The format after "gen_req_" was not as expected (e.g., "gen_req_JustID", "gen_req__0")
+                logging.warning(
+                    f"custom_id '{custom_id}' starts with '{prefix}' but "
+                    f"could not reliably extract an ID before a suffix. Using full custom_id."
+                )
+                return custom_id  # Fallback to full custom_id for safety
+        return custom_id  # Default: return the original custom_id
 
     @abstractmethod
-    def parse_inner(self, inner_data: Dict[str, Any], origin_id: str, run_id: str) -> Tuple[List[Dict[str, Any]], int]:
-        """Extrai itens processados de inner_data e retorna (itens, numero_de_erros)."""
+    def parse_inner(self, inner_data: Dict[str, Any], id_for_item_context: str, run_id: str) -> Tuple[
+        List[Dict[str, Any]], int]:
+        """
+        Abstract method to be implemented by subclasses.
+        Parses the `inner_data` (JSON content from LLM) to extract relevant items.
+        `id_for_item_context` provides a contextual ID (e.g., origin_id for UCs, or
+        the batch request's custom_id for difficulty assessments) for associating or logging items.
+        Returns a tuple: (list_of_extracted_items, number_of_errors_during_extraction).
+        """
         pass
 
     @abstractmethod
     def _save_to_db(self, db: Session, processed_data: List[Dict[str, Any]]) -> None:
         """
-        Hook para subclasses persistirem processed_data no banco usando a SESSÃO fornecida.
-        Esta função NÃO deve fazer commit.
-        Levanta exceção em caso de falha na adição à sessão.
+        Abstract method for subclasses to persist `processed_data` to the database
+        using the provided `db` Session. This method should NOT commit the transaction.
+        It should raise an exception if the database operation fails.
         """
         raise NotImplementedError
 
+
 class GenerationBatchProcessor(BaseBatchProcessor):
-    def parse_inner(self, inner_data: Dict[str, Any], origin_id: str, run_id: str) -> Tuple[List[Dict[str, Any]], int]:
+    """Processes batch results for UC generation."""
+
+    def parse_inner(self, inner_data: Dict[str, Any], origin_id_for_uc: str, run_id: str) -> Tuple[
+        List[Dict[str, Any]], int]:
+        """
+        Parses `inner_data` expecting 'generated_units'.
+        `origin_id_for_uc` is the ID of the original entity/community for these UCs.
+        """
         items = []
         errors = 0
-        units = inner_data.get("generated_units", [])
-        if not isinstance(units, list) or len(units) != 6:
-            errors += 1
-            logging.warning(f"JSON interno {origin_id} (run: {run_id}) != 6 UCs: {units}")
-            return items, errors
-        for unit in units:
-            if isinstance(unit, dict) and "bloom_level" in unit and "uc_text" in unit:
-                record = unit.copy()
-                record["uc_id"] = str(uuid.uuid4()) # Gerar ID único da UC
-                record["origin_id"] = origin_id
-                # run_id será adicionado por add_records
+        generated_units = inner_data.get("generated_units")
+
+        if not isinstance(generated_units, list):
+            logging.warning(
+                f"Expected 'generated_units' to be a list in inner_data for origin_id '{origin_id_for_uc}' (run: {run_id}). "
+                f"Found: {type(generated_units)}. Data (first 200 chars): {str(inner_data)[:200]}"
+            )
+            return items, 1  # Count as one structural error for this inner_data
+
+        if not (0 < len(generated_units) <= 6):  # LLM should ideally return all 6
+            logging.warning(
+                f"Expected 1-6 'generated_units' for origin_id '{origin_id_for_uc}' (run: {run_id}), "
+                f"but found {len(generated_units)}. Data: {str(generated_units)[:200]}"
+            )
+        for unit_idx, unit_data in enumerate(generated_units):
+            if isinstance(unit_data, dict) and "bloom_level" in unit_data and "uc_text" in unit_data:
+                record = {
+                    "uc_id": str(uuid.uuid4()),
+                    "origin_id": origin_id_for_uc,
+                    "bloom_level": unit_data["bloom_level"],
+                    "uc_text": unit_data["uc_text"]
+                }
                 items.append(record)
             else:
                 errors += 1
-                logging.warning(f"Formato UC inválido para {origin_id} (run: {run_id}): {unit}")
+                logging.warning(
+                    f"Invalid UC format in 'generated_units' at index {unit_idx} for "
+                    f"origin_id '{origin_id_for_uc}' (run: {run_id}). Unit data (first 100): {str(unit_data)[:100]}"
+                )
         return items, errors
 
     def _save_to_db(self, db: Session, processed_data: List[Dict[str, Any]]) -> None:
-        """Persiste generated UCs raw no banco usando a sessão db fornecida."""
-        try:
-            add_generated_ucs_raw(db, self.run_id, processed_data)
-        except Exception as e:
-            logging.error(f"Erro em add_generated_ucs_raw para run_id {self.run_id}: {e}")
-            raise
+        """Saves generated UCs to the raw UCs table."""
+        logging.debug(f"Saving {len(processed_data)} generated UCs for run_id {self.run_id}.")
+        add_generated_ucs_raw(db, self.run_id, processed_data)
 
 
 class DifficultyBatchProcessor(BaseBatchProcessor):
-    def parse_inner(self, inner_data: Dict[str, Any], origin_id: str, run_id: str) -> Tuple[List[Dict[str, Any]], int]:
+    """Processes batch results for difficulty assessment."""
+
+    def parse_inner(self, inner_data: Dict[str, Any], request_custom_id: str, run_id: str) -> Tuple[
+        List[Dict[str, Any]], int]:
+        """
+        Parses `inner_data` expecting 'difficulty_assessments'.
+        `request_custom_id` is the custom_id of the batch request, used here for logging context if needed.
+        The actual uc_id is expected inside each assessment item.
+        """
         items = []
         errors = 0
-        assessments = inner_data.get("difficulty_assessments", [])
-        if not isinstance(assessments, list):
-            errors += 1
-            logging.warning(f"JSON interno (run: {run_id}) sem lista 'difficulty_assessments': {inner_data}")
-            return items, errors
-        for assessment in assessments:
-            uc_id = assessment.get("uc_id")
-            score = assessment.get("difficulty_score")
-            justification = assessment.get("justification", "")
-            if isinstance(uc_id, str) and isinstance(score, int) and isinstance(justification, str):
+        difficulty_assessments = inner_data.get("difficulty_assessments")
+
+        if not isinstance(difficulty_assessments, list):
+            logging.warning(
+                f"Expected 'difficulty_assessments' to be a list in inner_data "
+                f"(batch request custom_id: {request_custom_id}, run: {run_id}). "
+                f"Found: {type(difficulty_assessments)}. Data (first 200): {str(inner_data)[:200]}"
+            )
+            return items, 1
+
+        for assessment_idx, assessment_data in enumerate(difficulty_assessments):
+            uc_id = assessment_data.get("uc_id")
+            difficulty_score = assessment_data.get("difficulty_score")
+            justification = assessment_data.get("justification", "")
+
+            if isinstance(uc_id, str) and isinstance(difficulty_score, int) and isinstance(justification, str):
                 record = {
                     "knowledge_unit_id": uc_id,
-                    "difficulty_score": score,
+                    "difficulty_score": difficulty_score,
                     "justification": justification
                 }
                 items.append(record)
             else:
                 errors += 1
-                logging.warning(f"Formato assessment inválido (run: {run_id}): {assessment}")
+                logging.warning(
+                    f"Invalid difficulty assessment format at index {assessment_idx} "
+                    f"(batch request custom_id: {request_custom_id}, run: {run_id}). "
+                    f"Assessment data (first 100): {str(assessment_data)[:100]}"
+                )
         return items, errors
 
     def _save_to_db(self, db: Session, processed_data: List[Dict[str, Any]]) -> None:
-        """Persiste raw UC evaluations no banco usando a sessão db fornecida."""
-        try:
-            add_knowledge_unit_evaluations_batch(db, self.run_id, processed_data)
-        except Exception as e:
-            logging.error(f"Erro em add_knowledge_unit_evaluations_batch para run_id {self.run_id}: {e}")
-            raise
+        """Saves difficulty assessments to the batch evaluations table."""
+        logging.debug(f"Saving {len(processed_data)} difficulty assessments for run_id {self.run_id}.")
+        add_knowledge_unit_evaluations_batch(db, self.run_id, processed_data)
+
 
 def process_batch_results(
-    batch_id: str,
-    output_file_id: str,
-    error_file_id: str,
-    stage_output_dir,
-    output_filename: str,
-    run_id: str,
-    db: Session
+        batch_id: str,
+        output_file_id: str,
+        error_file_id: Optional[str],
+        stage_output_dir: Any,
+        output_filename: str,
+        run_id: str,
+        db: Session
 ) -> bool:
     """
-    Delegates batch processing to the appropriate processor, using the provided db Session.
-    Returns True if processing and adding to the session were successful, False otherwise.
-    Does NOT commit the transaction.
+    Main entry point to process batch results.
+    Selects the appropriate processor based on `output_filename`,
+    invokes its `process` method, and returns the success status.
+    The provided `db` session is used for all database operations within the processor.
+    This function does NOT commit the transaction; the caller is responsible.
     """
+    logging.debug(
+        f"process_batch_results called for: batch_id='{batch_id}', output_filename='{output_filename}', run_id='{run_id}'"
+    )
     processor: Optional[BaseBatchProcessor] = None
-    # Seleciona o processor conforme o tipo de saída
-    if output_filename == pt.GENERATED_UCS_RAW:
+
+    if output_filename == GENERATED_UCS_RAW:
         processor = GenerationBatchProcessor(
             batch_id, output_file_id, error_file_id, stage_output_dir, output_filename, run_id
         )
-    elif output_filename == pt.UC_EVALUATIONS_RAW:
+    elif output_filename == UC_EVALUATIONS_RAW:
         processor = DifficultyBatchProcessor(
             batch_id, output_file_id, error_file_id, stage_output_dir, output_filename, run_id
         )
     else:
-        logging.error(f"process_batch_results: output_filename inválido '{output_filename}' para run_id {run_id}")
-        return False
+        logging.error(f"Unsupported 'output_filename': {output_filename} for batch processing (run_id: {run_id}).")
+        return False  
 
-    success = processor.process(db)
-
-    return success
+    return processor.process(db)
