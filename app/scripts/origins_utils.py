@@ -32,54 +32,81 @@ class HubNeighborSelector(OriginSelector):
         # Reutiliza lógica existente de seleção para teste
         return _select_origins_for_testing(all_origins, self.graphrag_output_dir, self.max_origins)
 
+
 def prepare_uc_origins(
-    entities_df: Optional[pd.DataFrame],
-    reports_df: Optional[pd.DataFrame]
+        enriched_entities: List[Dict[str, Any]],
+        community_reports_list: List[Dict[str, Any]],
+        community_structures_list: List[Dict[str, Any]],
+        hr_id_to_uuid_map: Dict[str, str]
 ) -> List[Dict[str, Any]]:
-    """Prepara a lista de 'origens' para a geração de UCs."""
-    uc_origins = []
+    """
+    Prepara a lista de 'origens' para a geração de UCs, incluindo o parent_community_id_of_origin.
+    """
+    uc_origins: List[Dict[str, Any]] = []
     logging.info("Preparando origens de UC...")
-    if entities_df is not None:
-        logging.info(f"Processando {len(entities_df)} entidades...")
-        req_cols = ['id', 'title', 'description', 'frequency', 'degree', 'type']
-        if all(c in entities_df.columns for c in req_cols):
-            for r in entities_df.itertuples(index=False):
-                freq = int(r.frequency) if pd.notna(r.frequency) else 0
-                deg = int(r.degree) if pd.notna(r.degree) else 0
-                entity_type = r.type if pd.notna(r.type) else "unknown"
-                uc_origins.append({
-                    "origin_id": r.id,
-                    "origin_type": "entity",
-                    "title": r.title,
-                    "context": r.description if pd.notna(r.description) else "",
-                    "frequency": freq,
-                    "degree": deg,
-                    "entity_type": entity_type,
-                    "level": 0
-                })
-        else:
-            missing = [c for c in req_cols if c not in entities_df.columns]
-            logging.warning(f"Colunas faltando em entities.parquet: {missing}")
-    if reports_df is not None:
-        logging.info(f"Processando {len(reports_df)} resumos de comunidade...")
-        req_cols = ['id', 'community', 'title', 'summary', 'level']
-        if all(c in reports_df.columns for c in req_cols):
-            for r in reports_df.itertuples(index=False):
-                level = int(r.level) if pd.notna(r.level) else 99
-                uc_origins.append({
-                    "origin_id": r.id,
-                    "origin_type": "community_report",
-                    "title": r.title,
-                    "context": r.summary if pd.notna(r.summary) else "",
-                    "frequency": 0,
-                    "degree": 0,
-                    "entity_type": "community",
-                    "level": level
-                })
-        else:
-            missing = [c for c in req_cols if c not in reports_df.columns]
-            logging.warning(f"Colunas faltando em community_reports.parquet: {missing}")
-    logging.info(f"Total {len(uc_origins)} origens preparadas.")
+
+    community_uuid_to_parent_uuid_map: Dict[str, Optional[str]] = {}
+    for cs_rec in community_structures_list:
+        cs_uuid = cs_rec.get('id')
+        cs_parent_uuid = cs_rec.get('parent_community_id')
+        if cs_uuid:
+            community_uuid_to_parent_uuid_map[str(cs_uuid)] = str(cs_parent_uuid) if cs_parent_uuid else None
+
+    if enriched_entities:
+        logging.info(f"Processando {len(enriched_entities)} entidades enriquecidas para origens...")
+        for entity_rec in enriched_entities:
+            parent_community_id_for_entity_origin = entity_rec.get('parent_community_id')
+            uc_origins.append({
+                "origin_id": entity_rec.get("id"),
+                "origin_type": "entity",
+                "title": entity_rec.get("title"),
+                "context": entity_rec.get("description", ""),
+                "frequency": int(entity_rec.get("frequency", 0)),
+                "degree": int(entity_rec.get("degree", 0)),
+                "entity_type": entity_rec.get("type", "unknown"),
+                "level": 0,
+                "parent_community_id_of_origin": str(
+                    parent_community_id_for_entity_origin) if parent_community_id_for_entity_origin else None
+            })
+
+    if community_reports_list:
+        logging.info(f"Processando {len(community_reports_list)} relatórios de comunidade para origens...")
+        for report_rec in community_reports_list:
+            report_community_hr_id_val = report_rec.get("community")
+            report_title = report_rec.get("title", "Relatório Sem Título")
+            parent_id_for_this_report_origin = None
+            origin_id_for_report = None  # Inicializa para evitar UnboundLocalError
+
+            if pd.notna(report_community_hr_id_val):
+                report_community_hr_id_str = str(int(report_community_hr_id_val)) if pd.api.types.is_number(
+                    report_community_hr_id_val) else str(report_community_hr_id_val)
+                report_community_uuid = hr_id_to_uuid_map.get(report_community_hr_id_str)
+
+                if report_community_uuid:
+                    origin_id_for_report = str(report_community_uuid)  # Define o origin_id corretamente
+                    parent_id_for_this_report_origin = community_uuid_to_parent_uuid_map.get(origin_id_for_report)
+                else:
+                    logging.warning(
+                        f"Relatório '{report_title}' tem community_hr_id '{report_community_hr_id_str}' não mapeado para UUID. Pulando origem.")
+                    continue
+            else:
+                logging.warning(f"Relatório '{report_title}' não tem 'community' (human_readable_id). Pulando origem.")
+                continue
+
+            uc_origins.append({
+                "origin_id": origin_id_for_report,
+                "origin_type": "community_report",
+                "title": report_title,
+                "context": report_rec.get("summary", ""),
+                "frequency": 0,
+                "degree": 0,
+                "entity_type": "community",
+                "level": int(report_rec.get("level", 99)),
+                "parent_community_id_of_origin": str(
+                    parent_id_for_this_report_origin) if parent_id_for_this_report_origin else None
+            })
+
+    logging.info(f"Total {len(uc_origins)} origens de UC preparadas.")
     return uc_origins
 
 def _get_sort_key(origin: Dict[str, Any]) -> Tuple[int, int]:

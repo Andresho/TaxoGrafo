@@ -31,6 +31,7 @@ def upgrade():
         sa.Column('text_unit_ids', sa.JSON()),
         sa.Column('period', sa.String()),
         sa.Column('size', sa.Integer()),
+        sa.Column('parent_community_id', sa.String()),
     )
     # community_reports
     op.create_table(
@@ -78,6 +79,7 @@ def upgrade():
         sa.Column('degree', sa.Integer()),
         sa.Column('x', sa.Float()),
         sa.Column('y', sa.Float()),
+        sa.Column('parent_community_id', sa.String()),
     )
     # relationships
     op.create_table(

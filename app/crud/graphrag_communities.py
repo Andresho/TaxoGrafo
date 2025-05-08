@@ -29,5 +29,6 @@ def get_communities(db: Session, run_id: str) -> list[dict]:
             'text_unit_ids': row.text_unit_ids,
             'period': row.period,
             'size': row.size,
+            'parent_community_id': row.parent_community_id,
         })
     return results

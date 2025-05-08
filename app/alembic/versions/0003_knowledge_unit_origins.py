@@ -26,6 +26,7 @@ def upgrade():
         sa.Column('degree', sa.Integer(), nullable=True),
         sa.Column('entity_type', sa.String(), nullable=True),
         sa.Column('level', sa.Integer(), nullable=True),
+        sa.Column('parent_community_id_of_origin', sa.String(), nullable=True),
     )
 
 def downgrade():

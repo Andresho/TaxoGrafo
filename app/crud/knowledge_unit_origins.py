@@ -25,6 +25,7 @@ def get_knowledge_unit_origins(db: Session, run_id: str) -> list[dict]:
             'degree': row.degree,
             'entity_type': row.entity_type,
             'level': row.level,
+            'parent_community_id_of_origin': row.parent_community_id_of_origin,
         }
         results.append(d)
     return results

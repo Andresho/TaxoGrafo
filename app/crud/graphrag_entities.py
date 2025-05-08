@@ -26,5 +26,6 @@ def get_entities(db: Session, run_id: str) -> list[dict]:
             'degree': row.degree,
             'x': row.x,
             'y': row.y,
+            'parent_community_id': row.parent_community_id,
         })
     return results

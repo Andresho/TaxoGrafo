@@ -33,6 +33,7 @@ class GraphragCommunity(Base):
     text_unit_ids = Column(JSON)
     period = Column(String)
     size = Column(Integer)
+    parent_community_id = Column(String)
 
 class GraphragCommunityReport(Base):
     __tablename__ = "graphrag_community_reports"
@@ -77,6 +78,7 @@ class GraphragEntity(Base):
     degree = Column(Integer)
     x = Column(Float)
     y = Column(Float)
+    parent_community_id = Column(String)
 
 class GraphragRelationship(Base):
     __tablename__ = "graphrag_relationships"
@@ -115,6 +117,7 @@ class KnowledgeUnitOrigin(Base):
     degree = Column(Integer)
     entity_type = Column(String)
     level = Column(Integer)
+    parent_community_id_of_origin = Column(String)
 
     # ------------------------
     # Generated UCs and relationships tables

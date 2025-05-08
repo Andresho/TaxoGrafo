@@ -2,13 +2,15 @@
 
 import pandas as pd
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 import logging
 from collections import defaultdict
 import random
 from dotenv import load_dotenv
 import time
 import datetime
+import json
+import numpy as np
 
 from scripts.llm_client import get_llm_strategy
 from scripts.io_utils import save_dataframe, load_dataframe
@@ -97,157 +99,238 @@ DEFAULT_OUTPUT_COLUMNS = {
     UC_EVALUATIONS_RAW: ["uc_id", "difficulty_score", "justification"]
 }
 
-# --- Funções de Tarefa do DAG ---
+def _build_community_maps(
+        actual_communities_df: pd.DataFrame
+) -> Tuple[Dict[str, str], List[Dict[str, Any]], Dict[str, str]]:
+    """
+    Processa o DataFrame da ESTRUTURA das comunidades (ex: communities.parquet) para:
+    1. Criar um mapa de human_readable_id (string) para UUID (string) da comunidade.
+    2. Enriquecer os registros de ESTRUTURA da comunidade com 'parent_community_id' (UUID do pai).
+    3. Criar um mapa de entity_id (string) para o UUID (string) da comunidade folha à qual pertence.
+    """
+    human_readable_to_uuid_map: Dict[str, str] = {}
+    if 'human_readable_id' in actual_communities_df.columns and 'id' in actual_communities_df.columns:
+        for hr_id_val, community_uuid_val in zip(actual_communities_df['human_readable_id'],
+                                                 actual_communities_df['id']):
+            if pd.notna(hr_id_val) and pd.notna(community_uuid_val):
+                hr_id_str = str(int(hr_id_val)) if pd.api.types.is_number(hr_id_val) else str(hr_id_val)
+                human_readable_to_uuid_map[hr_id_str] = str(community_uuid_val)
+            elif pd.notna(community_uuid_val):
+                logging.warning(
+                    f"Comunidade com ID {community_uuid_val} não possui human_readable_id. Não será mapeável como pai por HR_ID.")
+    else:
+        logging.error(
+            "'human_readable_id' ou 'id' não encontrados em communities.parquet. Mapas podem estar incompletos.")
+
+    processed_community_structure_records: List[Dict[str, Any]] = []
+    entity_to_community_map: Dict[str, str] = {}
+
+    expected_db_cols_for_graphrag_community = {
+        'id', 'human_readable_id', 'community', 'level', 'parent',
+        'children', 'title', 'entity_ids', 'relationship_ids',
+        'text_unit_ids', 'period', 'size'
+    }
+
+    for community_row_tuple in actual_communities_df.itertuples(index=False):
+        community_db_rec: Dict[str, Any] = {}
+
+        for col_name_from_df in actual_communities_df.columns:
+            if col_name_from_df in expected_db_cols_for_graphrag_community:
+                community_db_rec[col_name_from_df] = getattr(community_row_tuple, col_name_from_df)
+
+        # Validações e defaults para colunas essenciais no DB record
+        if not pd.notna(community_db_rec.get('id')):
+            logging.error(f"Registro de comunidade em communities.parquet sem 'id' (UUID). Pulando.")
+            continue
+
+        community_uuid_str = str(community_db_rec.get('id'))
+        community_title_val = community_db_rec.get('title', f'Comunidade Sem Título {community_uuid_str}')
+
+        # Garantir que todas as colunas esperadas para a tabela estejam no dict, mesmo que com None
+        for db_col in expected_db_cols_for_graphrag_community:
+            if db_col not in community_db_rec:
+                # Valores padrão para colunas JSON/list
+                if db_col in ['children', 'entity_ids', 'relationship_ids', 'text_unit_ids']:
+                    community_db_rec[db_col] = []  # ou None
+                else:
+                    community_db_rec[db_col] = None
+
+        # Resolver parent_community_id (UUID do pai)
+        parent_hr_id_val = community_db_rec.get(
+            'parent')  # 'parent' é o human_readable_id do pai no communities.parquet
+        parent_hr_id_str = None
+        if pd.notna(parent_hr_id_val):
+            parent_hr_id_str = str(int(parent_hr_id_val)) if pd.api.types.is_number(parent_hr_id_val) else str(
+                parent_hr_id_val)
+
+        if parent_hr_id_str and parent_hr_id_str in human_readable_to_uuid_map:
+            community_db_rec['parent_community_id'] = human_readable_to_uuid_map[parent_hr_id_str]
+        else:
+            community_db_rec['parent_community_id'] = None
+            if parent_hr_id_str and parent_hr_id_str != '-1' and parent_hr_id_str not in human_readable_to_uuid_map:
+                logging.warning(f"Comunidade (estrutura) '{community_title_val}' (UUID: {community_uuid_str}) "
+                                f"tem parent_hr_id '{parent_hr_id_str}' não mapeado para UUID.")
+
+        # Popular entity_to_community_map
+        entity_ids_data = community_db_rec.get('entity_ids')
+        parsed_entity_ids_list = []
+        if entity_ids_data is not None:
+            if isinstance(entity_ids_data, str):
+                try:
+                    loaded_json = json.loads(entity_ids_data)
+                    if isinstance(loaded_json, list):
+                        parsed_entity_ids_list = loaded_json
+                    else:
+                        logging.error(
+                            f"JSON 'entity_ids' para comunidade {community_uuid_str} não é lista: {loaded_json}.")
+                except json.JSONDecodeError:
+                    logging.error(
+                        f"JSON 'entity_ids' malformado para comunidade {community_uuid_str}: {entity_ids_data}.")
+            elif isinstance(entity_ids_data, list):
+                parsed_entity_ids_list = entity_ids_data
+            elif isinstance(entity_ids_data, np.ndarray):
+                parsed_entity_ids_list = entity_ids_data.tolist()
+            else:
+                logging.warning(
+                    f"'entity_ids' para comunidade {community_uuid_str} tem tipo inesperado: {type(entity_ids_data)}.")
+
+            for ent_id_val in parsed_entity_ids_list:
+                if pd.notna(ent_id_val):
+                    entity_to_community_map[str(ent_id_val)] = community_uuid_str
+                else:
+                    logging.warning(f"entity_id nulo na lista de entidades da comunidade {community_uuid_str}.")
+
+        processed_community_structure_records.append(community_db_rec)
+
+    return human_readable_to_uuid_map, processed_community_structure_records, entity_to_community_map
+
+def _enrich_entities_with_community_id(
+        entities_df: pd.DataFrame,
+        entity_to_community_map: Dict[str, str]
+) -> List[Dict[str, Any]]:
+    """
+    Adiciona 'parent_community_id' (UUID da comunidade folha) a cada registro de entidade.
+    """
+    processed_entity_records = []
+    if entities_df is None or entities_df.empty:
+        logging.warning("DataFrame de entidades vazio ou nulo em _enrich_entities_with_community_id.")
+        return processed_entity_records
+
+    for entity_row_tuple in entities_df.itertuples(index=False):
+        entity_rec = entity_row_tuple._asdict()
+        entity_uuid_val = entity_rec.get('id')
+        entity_title_val = entity_rec.get('title', 'Título Desconhecido')
+
+        if not pd.notna(entity_uuid_val):
+            logging.error(f"Registro de entidade sem ID UUID encontrado: {entity_title_val}. Pulando este registro.")
+            continue
+
+        entity_uuid_str = str(entity_uuid_val)
+        entity_rec['parent_community_id'] = entity_to_community_map.get(
+            entity_uuid_str)
+        processed_entity_records.append(entity_rec)
+    return processed_entity_records
+
+
 def task_prepare_origins(run_id: str, **context):
     """
-    Tarefa 1: Prepara origens de UC e ingere outputs do GraphRAG no banco de dados.
-
-    Garante atomicidade das operações de banco de dados para esta task.
-    Levanta ValueError se inputs essenciais (entities/reports Parquet)
-    ou outputs esperados do GraphRAG estiverem ausentes ou vazios,
-    assumindo que o GraphRAG deveria ter rodado ou já existia.
+    Tarefa 1: Prepara origens de UC e ingere outputs do GraphRAG (enriquecidos) no banco.
+    Garante atomicidade e valida inputs/outputs do GraphRAG.
     """
     logging.info(f"--- TASK: prepare_origins (run_id={run_id}) ---")
     task_successful = False
+    final_log_message = "FALHOU"
 
     with get_session() as db:
         try:
-            # Determinar caminhos
-            base_input, s1, *_ = _get_dirs(run_id)
-            graphrag_output_dir = base_input # Diretório onde o GraphRAG salva os .parquet
+            base_input, _, _, _, _, _, _ = _get_dirs(run_id)
+            graphrag_output_dir = base_input
 
-            # Verificar se o GraphRAG foi pulado (pela conf do DAG)
-            dag_run = context.get('dag_run')
-            skip_graphrag = dag_run and dag_run.conf.get('skip_graphrag', False)
-            logging.info(f"GraphRAG foi pulado nesta execução? {'Sim' if skip_graphrag else 'Não'}")
+            existing_origins_in_db = crud_knowledge_unit_origins.get_knowledge_unit_origins(db, run_id)
+            existing_graphrag_entities_in_db = crud_graphrag_entities.get_entities(db, run_id)
 
-            # --- Preparação das Origens de UC ---
-            # Verificar idempotência antes de tentar preparar/inserir
-            existing_origins = crud_knowledge_unit_origins.get_knowledge_unit_origins(db, run_id)
-            if existing_origins:
-                logging.info(f"Origens de UC já existem para run_id={run_id} no banco. Pulando preparação e adição.")
+            if existing_origins_in_db and existing_graphrag_entities_in_db:
+                logging.info(
+                    f"Dados de GraphRAG (entidades) e Origens de UC já existem no banco para run_id={run_id}. Pulando.")
+                task_successful = True
+                final_log_message = "CONCLUÍDA (Idempotente - dados já no banco)"
             else:
-                logging.info("Preparando novas origens de UC...")
-                # Carregar dados base para origens (Entities e Reports)
-                entities_df = load_dataframe(graphrag_output_dir, "entities")
+                logging.info("Carregando arquivos Parquet do GraphRAG...")
+                actual_communities_df = load_dataframe(graphrag_output_dir, "communities")
                 reports_df = load_dataframe(graphrag_output_dir, "community_reports")
+                entities_df = load_dataframe(graphrag_output_dir, "entities")
+                documents_df = load_dataframe(graphrag_output_dir, "documents")
+                relationships_df = load_dataframe(graphrag_output_dir, "relationships")
+                text_units_df = load_dataframe(graphrag_output_dir, "text_units")
 
-                # Validar se os DFs base para origens foram carregados
-                # Se o GraphRAG NÃO foi pulado, esses arquivos DEVEM existir.
-                if not skip_graphrag:
-                    if entities_df is None:
-                        raise ValueError(f"Erro crítico: entities.parquet não encontrado em {graphrag_output_dir}, mas GraphRAG não foi pulado.")
-                    if reports_df is None:
-                         raise ValueError(f"Erro crítico: community_reports.parquet não encontrado em {graphrag_output_dir}, mas GraphRAG não foi pulado.")
-                    # Validar se não estão vazios
-                    if entities_df.empty:
-                        raise ValueError(f"Erro crítico: entities.parquet está vazio em {graphrag_output_dir}.")
-                    # reports_df pode ser vazio em alguns casos, talvez ser menos estrito aqui? Por ora, vamos exigir.
-                    if reports_df.empty:
-                         raise ValueError(f"Erro crítico: community_reports.parquet está vazio em {graphrag_output_dir}.")
+                if entities_df is None or entities_df.empty:
+                    raise ValueError(f"Erro crítico: entities.parquet não encontrado ou vazio.")
+                if actual_communities_df is None or actual_communities_df.empty:
+                    raise ValueError(f"Erro crítico: 'communities.parquet' (estrutura) não encontrado ou vazio.")
+                if reports_df is None or reports_df.empty:
+                    logging.warning(
+                        f"'community_reports.parquet' não encontrado ou vazio. Origens de 'community_report' podem não ser geradas.")
 
-                # Se o GraphRAG FOI pulado, mas os arquivos ainda não existem (estranho), falhar também.
-                if skip_graphrag and (entities_df is None or reports_df is None):
-                     raise ValueError(f"Erro crítico: GraphRAG foi pulado, mas entities/reports .parquet não encontrados em {graphrag_output_dir}.")
-                if skip_graphrag and (entities_df.empty or reports_df.empty):
-                    raise ValueError(f"Erro crítico: GraphRAG foi pulado, mas entities/reports .parquet estão vazios em {graphrag_output_dir}.")
+                logging.info("Processando dados de ESTRUTURA de comunidades...")
+                hr_id_to_uuid_map, processed_community_structure_records, entity_to_community_map = _build_community_maps(
+                    actual_communities_df)
 
+                logging.info("Enriquecendo dados de entidades com IDs de comunidade pai (folha)...")
+                processed_entity_records = _enrich_entities_with_community_id(entities_df, entity_to_community_map)
 
-                origins = prepare_uc_origins(entities_df, reports_df) # Assume que esta função não falha se DFs são válidos
-                if not origins:
-                    # Isso pode acontecer se entities/reports não gerarem origens? Se sim, é warning. Se não, erro.
-                    # Vamos assumir que é possível e apenas logar.
-                    logging.warning("Nenhuma origem de UC foi preparada a partir dos dados carregados.")
-                    origins = [] # Garante que é uma lista
+                logging.info("Ingerindo dados processados do GraphRAG no banco de dados (pendente)...")
+                if processed_community_structure_records:
+                    crud_graphrag_communities.add_communities(db, run_id, processed_community_structure_records)
+                if reports_df is not None and not reports_df.empty:
+                    crud_graphrag_community_reports.add_community_reports(db, run_id, reports_df.to_dict('records'))
+                if processed_entity_records:
+                    crud_graphrag_entities.add_entities(db, run_id, processed_entity_records)
 
-                # Adicionar origens ao DB (sem commit ainda, pois add_records foi modificado)
-                logging.info(f"Adicionando {len(origins)} origens de UC ao banco de dados (pendente)...")
-                crud_knowledge_unit_origins.add_knowledge_unit_origins(db, run_id, origins)
+                if documents_df is not None and not documents_df.empty:
+                    crud_graphrag_documents.add_documents(db, run_id, documents_df.to_dict('records'))
+                if relationships_df is not None and not relationships_df.empty:
+                    crud_graphrag_relationships.add_relationships(db, run_id, relationships_df.to_dict('records'))
+                if text_units_df is not None and not text_units_df.empty:
+                    crud_graphrag_text_units.add_text_units(db, run_id, text_units_df.to_dict('records'))
+                logging.info("Dados do GraphRAG adicionados à sessão do banco.")
 
+                # --- Preparar Knowledge Unit Origins ---
+                origins_to_save = []
+                if (processed_entity_records or (reports_df is not None and not reports_df.empty)):
+                    logging.info("Preparando Knowledge Unit Origins...")
+                    origins_to_save = prepare_uc_origins(
+                        processed_entity_records if processed_entity_records else [],
+                        reports_df.to_dict('records') if (reports_df is not None and not reports_df.empty) else [],
+                        processed_community_structure_records if processed_community_structure_records else [],
+                        hr_id_to_uuid_map
+                    )
+                else:
+                    logging.warning("Nenhuma entidade ou relatório de comunidade para criar origens de UC.")
 
-            # --- Ingestão dos Outputs do GraphRAG ---
-            logging.info("Iniciando ingestão de outputs do GraphRAG no banco de dados...")
-            table_crud_map = {
-                'communities': (crud_graphrag_communities.add_communities, True),
-                'community_reports': (crud_graphrag_community_reports.add_community_reports, True),
-                'documents': (crud_graphrag_documents.add_documents, True),
-                'entities': (crud_graphrag_entities.add_entities, True),
-                'relationships': (crud_graphrag_relationships.add_relationships, True),
-                'text_units': (crud_graphrag_text_units.add_text_units, True),
-            }
+                if origins_to_save:
+                    logging.info(f"Adicionando {len(origins_to_save)} origens de UC ao banco de dados (pendente)...")
+                    crud_knowledge_unit_origins.add_knowledge_unit_origins(db, run_id, origins_to_save)
+                else:
+                    logging.warning("Nenhuma Knowledge Unit Origin foi preparada para salvar.")
 
-            ingested_tables = set()
-            for table_name, (add_func, is_required) in table_crud_map.items():
-                 # Verificar idempotência: add_records com ON CONFLICT cuida disso no nível da linha.
-                 # Não precisamos verificar se a tabela já tem dados antes de chamar add_func.
+                logging.info("Commitando todas as alterações da task...")
+                db.commit()
+                task_successful = True
+                final_log_message = "CONCLUÍDA com sucesso"
 
-                parquet_path = graphrag_output_dir / f"{table_name}.parquet"
-
-                if not parquet_path.is_file():
-                    if is_required and not skip_graphrag:
-                        # Se era obrigatório e GraphRAG não foi pulado, é erro
-                        raise ValueError(f"Erro crítico: Arquivo GraphRAG '{table_name}.parquet' não encontrado em {graphrag_output_dir}, mas era esperado.")
-                    elif skip_graphrag:
-                         # Se GraphRAG foi pulado, ok não existir (assumindo que foi pulado pq já existe no DB?)
-                         # Ou talvez devêssemos verificar se já existe no DB? Por ora, apenas log.
-                         logging.info(f"Arquivo '{table_name}.parquet' não encontrado, mas GraphRAG foi pulado. Pulando ingestão.")
-                         continue # Pula para próxima tabela
-                    else:
-                        # Não era obrigatório e não foi pulado, ou era obrigatório mas foi pulado... Log warning.
-                        logging.warning(f"Arquivo '{table_name}.parquet' não encontrado em {graphrag_output_dir}. Pulando ingestão.")
-                        continue # Pula para próxima tabela
-
-                # Se o arquivo existe, tentar ler e processar
-                try:
-                    df = pd.read_parquet(parquet_path)
-                    if df.empty:
-                        if is_required and not skip_graphrag:
-                             raise ValueError(f"Erro crítico: Arquivo GraphRAG '{table_name}.parquet' está vazio em {graphrag_output_dir}, mas era esperado.")
-                        elif skip_graphrag:
-                             logging.info(f"Arquivo '{table_name}.parquet' está vazio, mas GraphRAG foi pulado. Pulando ingestão.")
-                             continue
-                        else:
-                            logging.warning(f"Arquivo '{table_name}.parquet' está vazio. Pulando ingestão.")
-                            continue
-
-                    # Se temos dados, adicionar ao DB (pendente na transação)
-                    records = df.to_dict('records')
-                    logging.debug(f"Adicionando {len(records)} registros de '{table_name}' (pendente)...")
-                    add_func(db, run_id, records) # add_records chamado internamente NÃO commita
-                    ingested_tables.add(table_name)
-
-                except Exception as read_err:
-                    # Erro lendo Parquet é sempre crítico
-                    logging.error(f"Falha ao ler/processar '{parquet_path}' para run_id={run_id}: {read_err}")
-                    raise ValueError(f"Falha ao processar arquivo {table_name}.parquet") from read_err
-
-            logging.info(f"Ingestão de {len(ingested_tables)} tabelas do GraphRAG pendente na transação: {ingested_tables}")
-
-            # --- Commit Final ---
-            # Se todas as operações (preparação de origens + ingestão GraphRAG)
-            # chegaram até aqui sem levantar exceção, commitar a transação inteira.
-            logging.info("Commitando todas as alterações da task no banco de dados...")
-            db.commit()
-            logging.info("Commit bem-sucedido.")
-            task_successful = True # Marca a task como sucesso
-
+        except ValueError as ve:
+            logging.error(f"Erro de valor durante task_prepare_origins: {ve}", exc_info=True)
+            db.rollback();
+            final_log_message = "FALHOU (Erro de Valor)";
+            raise
         except Exception as e:
-            # Se qualquer erro ocorreu (ValueError, erro de DB, erro de leitura, etc.)
-            logging.error(f"Erro durante task_prepare_origins para run_id={run_id}: {e}", exc_info=True) # Adiciona traceback ao log
-            logging.info("Fazendo rollback das alterações da transação...")
-            db.rollback()
-            logging.info("Rollback concluído.")
-            # Re-levanta a exceção para que o Airflow marque a task como falha
+            logging.error(f"Erro geral durante task_prepare_origins: {e}", exc_info=True)
+            db.rollback();
+            final_log_message = "FALHOU (Erro Geral)";
             raise
 
-    # Log final fora do bloco `with`
-    if task_successful:
-        logging.info(f"--- TASK prepare_origins CONCLUÍDA com sucesso (run_id={run_id}) ---")
-    else:
-        # Este log só será atingido se a exceção for capturada fora deste escopo
-        # (o que não deve acontecer com o 'raise' dentro do except)
-        # Mas por segurança:
-        logging.error(f"--- TASK prepare_origins FALHOU (run_id={run_id}) ---")
+    log_level = logging.INFO if task_successful else logging.ERROR
+    logging.log(log_level, f"--- TASK prepare_origins {final_log_message} (run_id={run_id}) ---")
 
 def task_submit_uc_generation_batch(run_id: str, **context):
     """Tarefa 2: Prepara JSONL e submete batch de geração UC para um run_id."""
