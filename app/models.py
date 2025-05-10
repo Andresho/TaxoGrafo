@@ -168,5 +168,6 @@ class KnowledgeUnitEvaluationsAggregatedBatch(Base):
     __tablename__ = 'knowledge_unit_evaluations_aggregated_batch'
     pipeline_run_id = Column(String, ForeignKey('pipeline_runs.run_id', ondelete='CASCADE'), primary_key=True)
     knowledge_unit_id = Column(String, primary_key=True)
+    request_custom_id = Column(String, primary_key=True, nullable=False)
     difficulty_score = Column(Integer)
     justification = Column(Text)

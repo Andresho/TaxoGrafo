@@ -27,6 +27,7 @@ from scripts.batch_utils import check_batch_status, process_batch_results
 from scripts.rel_utils import _add_relationships_avoiding_duplicates, _create_expands_links, _prepare_expands_lookups
 from scripts.difficulty_utils import _format_difficulty_prompt, _calculate_final_difficulty_from_raw
 from scripts.rel_builders import RequiresBuilder, ExpandsBuilder
+from scripts.difficulty_scheduler import OriginDifficultyScheduler
 from scripts.constants import (
     MAX_ORIGINS_FOR_TESTING,
     BLOOM_ORDER,
@@ -537,83 +538,125 @@ def task_define_relationships(run_id: str, **context):
     else:
         logging.error(f"--- TASK define_relationships FALHOU (run_id={run_id}) ---")
 
-def task_submit_difficulty_batch(run_id: str, **context):
-    """Tarefa: Prepara e submete batch de avaliação de dificuldade para um run_id."""
-    logging.info("--- TASK: submit_difficulty_batch ---")
-    # Idempotência: se já houver avaliações, pular
-    with get_session() as db:
-        existing = crud_knowledge_unit_evaluations_batch.get_knowledge_unit_evaluations_batch(db, run_id)
-        if existing:
-            # Idempotência: já existem avaliações, retorna um batch_id fictício para fluxo
-            fake_id = "fake_id_for_indepotency"
-            logging.info(f"Avaliações já existem para run_id={run_id}, pulando submissão de batch. Retornando fake batch_id={fake_id}")
-            return fake_id
-    # Garante que o LLM strategy está configurado
-    llm = get_llm_strategy()
-    batch_job_id = None
-    try:
-        # Diretórios de saída e batch
-        _, _, _, _, s4, _, batch_dir = _get_dirs(run_id)
-        # Carrega UCs geradas via CRUD
-        with get_session() as db:
-            generated_ucs = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
 
-        try:
-            with open(PROMPT_UC_DIFFICULTY_FILE, 'r', encoding='utf-8') as f: prompt_template = f.read()
-        except Exception as e: raise ValueError(f"Erro lendo prompt diff: {e}")
-        # Prepara registros de batch de dificuldade e salva JSONL via DataLake
-        batch_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        batch_input_filename = f"uc_difficulty_batch_{timestamp}.jsonl"
-        batch_input_path = batch_dir / batch_input_filename
-        records = []
-        # Agrupa UCs por nivel de Bloom
-        ucs_by_bloom: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-        for uc in generated_ucs:
-            level = uc.get("bloom_level")
-            if level in BLOOM_ORDER_MAP:
-                ucs_by_bloom[level].append(uc)
-        # Cria requests por batch
-        for bloom_level, ucs_in_level in ucs_by_bloom.items():
-            indices = list(range(len(ucs_in_level)))
-            random.shuffle(indices)
-            for batch_idx, start in enumerate(range(0, len(indices), DIFFICULTY_BATCH_SIZE)):
-                batch_indices = indices[start:start + DIFFICULTY_BATCH_SIZE]
-                batch_ucs_data = [ucs_in_level[i] for i in batch_indices]
-                if not batch_ucs_data:
-                    continue
-                formatted_prompt = _format_difficulty_prompt(batch_ucs_data, prompt_template)
-                custom_batch_id = f"diff_eval_{bloom_level}_{batch_idx}"
+def task_submit_difficulty_batch(run_id: str, **context):
+    logging.info(f"--- TASK: submit_difficulty_batch (run_id={run_id}) ---")
+
+    with get_session() as db:
+        existing_evals = crud_knowledge_unit_evaluations_batch.get_knowledge_unit_evaluations_batch(db, run_id)
+        if existing_evals:
+            fake_batch_id = "fake_id_for_difficulty_evals_exist"
+            logging.info(
+                f"Avaliações de dificuldade já existem para run_id={run_id}. Pulando. Retornando fake batch_id={fake_batch_id}")
+            return fake_batch_id
+
+        generated_ucs_raw_list = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
+        if not generated_ucs_raw_list:
+            logging.warning("Nenhuma UC gerada (raw) para avaliar dificuldade. Pulando submissão de batch.")
+            return "fake_id_for_no_ucs_to_evaluate"
+
+        all_knowledge_origins_list = crud_knowledge_unit_origins.get_knowledge_unit_origins(db, run_id)
+        if not all_knowledge_origins_list:
+            logging.error(f"Knowledge Origins não encontradas para run_id={run_id}, mas UCs geradas existem.")
+            return "fake_id_for_no_origins"
+
+    ucs_by_origin_then_bloom: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(lambda: defaultdict(dict))
+    for uc_raw in generated_ucs_raw_list:
+        origin_id = str(uc_raw.get('origin_id'))
+        bloom_level = uc_raw.get('bloom_level')
+        if origin_id and bloom_level:
+            ucs_by_origin_then_bloom[origin_id][bloom_level] = uc_raw
+
+    scheduler = OriginDifficultyScheduler(
+        all_knowledge_origins=all_knowledge_origins_list,
+        min_evaluations_per_origin=MIN_EVALUATIONS_PER_UC,
+        difficulty_batch_size=DIFFICULTY_BATCH_SIZE
+    )
+    paired_origin_ids_list = scheduler.generate_origin_pairings()
+
+    if not paired_origin_ids_list:
+        logging.info("Nenhum conjunto de origens foi pareado para avaliação. Nada a submeter.")
+        return "fake_id_for_no_origin_pairs"
+
+    requests_for_llm_batch: List[Dict[str, Any]] = []
+    llm_request_index = 0
+
+    try:
+        with open(PROMPT_UC_DIFFICULTY_FILE, 'r', encoding='utf-8') as f:
+            prompt_template = f.read()
+    except Exception as e:
+        logging.error(f"Erro lendo prompt de dificuldade: {e}")
+        raise ValueError(f"Erro lendo prompt de dificuldade: {e}")
+
+    for origin_id_tuple in paired_origin_ids_list:
+        for bloom_level in BLOOM_ORDER:
+            ucs_for_this_llm_request: List[Dict[str, str]] = []
+            valid_llm_request_for_this_bloom = True
+
+            for origin_id_in_tuple in origin_id_tuple:
+                uc_data = ucs_by_origin_then_bloom.get(str(origin_id_in_tuple), {}).get(bloom_level)
+                if uc_data and uc_data.get('uc_id') and uc_data.get('uc_text'):
+                    ucs_for_this_llm_request.append({
+                        "uc_id": str(uc_data['uc_id']),
+                        "uc_text": str(uc_data['uc_text'])
+                    })
+                else:
+                    valid_llm_request_for_this_bloom = False
+                    logging.debug(
+                        f"Origem {origin_id_in_tuple} no conjunto {origin_id_tuple} não tem UC para Bloom {bloom_level}. Pulando LLM request.")
+                    break
+
+            if valid_llm_request_for_this_bloom and len(ucs_for_this_llm_request) == DIFFICULTY_BATCH_SIZE:
+                formatted_prompt_text = _format_difficulty_prompt(ucs_for_this_llm_request, prompt_template)
+
+                request_custom_id = f"diff_eval_{run_id}_{bloom_level}_{llm_request_index}"
+                llm_request_index += 1
+
                 request_body = {
                     "model": LLM_MODEL,
-                    "messages": [
-                        {"role": "system", "content": "..."},
-                        {"role": "user", "content": formatted_prompt}
-                    ],
+                    "messages": [{"role": "system", "content": "Você é um especialista em educação..."},
+                                 {"role": "user", "content": formatted_prompt_text}],
                     "temperature": LLM_TEMPERATURE_DIFFICULTY,
                     "response_format": {"type": "json_object"}
                 }
-                records.append({
-                    "custom_id": custom_batch_id,
+                requests_for_llm_batch.append({
+                    "custom_id": request_custom_id,
                     "method": "POST",
                     "url": "/v1/chat/completions",
                     "body": request_body
                 })
-        DataLake.write_jsonl(records, batch_input_path)
-        logging.info(f"Arquivo batch de dificuldade criado: {batch_input_path} ({len(records)} requests)")
-        logging.info(f"Fazendo upload de {batch_input_path} via LLM strategy...")
+            elif valid_llm_request_for_this_bloom and ucs_for_this_llm_request:
+                logging.warning(f"Batch de LLM para conjunto {origin_id_tuple} e nível {bloom_level} "
+                                f"teria {len(ucs_for_this_llm_request)} UCs != {DIFFICULTY_BATCH_SIZE}. Pulando.")
+
+    if not requests_for_llm_batch:
+        logging.info("Nenhum request de LLM para avaliação de dificuldade foi gerado. Nada a submeter.")
+        return "fake_id_for_no_llm_requests_generated"
+
+    llm = get_llm_strategy() 
+    _, _, _, _, _, _, batch_files_dir_path = _get_dirs(run_id)
+    batch_files_dir_path.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    batch_input_filename = f"uc_difficulty_batch_input_{timestamp}.jsonl"
+    batch_input_path = batch_files_dir_path / batch_input_filename
+
+    DataLake.write_jsonl(requests_for_llm_batch, batch_input_path)
+    logging.info(f"Arquivo batch de dificuldade ({len(requests_for_llm_batch)} requests) criado: {batch_input_path}")
+
+    try:
         file_id = llm.upload_batch_file(batch_input_path)
-        logging.info(f"Upload concluído. File ID: {file_id}")
-        logging.info("Criando batch job de dificuldade via LLM strategy...")
+        logging.info(f"Upload do arquivo de batch de dificuldade concluído. File ID: {file_id}")
+
         batch_job_id = llm.create_batch_job(
             input_file_id=file_id,
             endpoint="/v1/chat/completions",
-            metadata={'description': 'UC Difficulty Evaluation Batch'}
+            metadata={'description': f'UC Difficulty Evaluation Batch for run_id {run_id}'}
         )
-        logging.info(f"Batch job criado. Batch ID: {batch_job_id}")
-    except Exception as e: logging.exception("Falha na task_submit_difficulty_batch"); raise
-    return batch_job_id
-
+        logging.info(f"Batch job de dificuldade submetido. Batch ID: {batch_job_id}")
+        return batch_job_id
+    except Exception as e:
+        logging.error(f"Erro durante upload ou criação do batch job de dificuldade: {e}", exc_info=True)
+        raise
 
 def task_finalize_outputs(run_id: str, **context):
     """
@@ -626,12 +669,11 @@ def task_finalize_outputs(run_id: str, **context):
     """
     logging.info(f"--- TASK: finalize_outputs (run_id={run_id}) ---")
     task_successful = False
-    final_log_message = "FALHOU" # Default log message
+    final_log_message = "FALHOU
 
     with get_session() as db:
         try:
             # 1. Verificar idempotência para outputs finais (checando UCs finais)
-            # Também verificamos se o status já é 'success', pois não faria sentido rodar de novo.
             run_status = None
             existing_run = crud_runs.get_run(db, run_id)
             if existing_run:
@@ -665,7 +707,6 @@ def task_finalize_outputs(run_id: str, **context):
                  rels_intermed_records = crud_rel_intermediate.get_knowledge_relationships_intermediate(db, run_id)
                  evals_records = crud_knowledge_unit_evaluations_batch.get_knowledge_unit_evaluations_batch(db, run_id)
 
-                 # Validar input essencial: UCs geradas brutas
                  if not generated_records:
                      raise ValueError(f"Erro crítico: Nenhum registro de UCs geradas (generated_ucs_raw) encontrado no banco para run_id={run_id}.")
 
@@ -720,7 +761,6 @@ def task_finalize_outputs(run_id: str, **context):
                  final_log_message = "CONCLUÍDA com sucesso"
 
         except Exception as e:
-            # 8. Se qualquer erro ocorreu ANTES do commit final
             logging.error(f"Erro durante task_finalize_outputs para run_id={run_id}: {e}", exc_info=True)
             logging.info("Fazendo rollback das alterações da transação (outputs finais, status)...")
             db.rollback()
@@ -728,7 +768,6 @@ def task_finalize_outputs(run_id: str, **context):
             final_log_message = "FALHOU"
             raise
 
-    # Log final (a mensagem é definida dentro do try/except/if)
     log_level = logging.INFO if task_successful else logging.ERROR
     logging.log(log_level, f"--- TASK finalize_outputs {final_log_message} (run_id={run_id}) ---")
     
@@ -789,19 +828,15 @@ def task_process_uc_generation_batch(run_id: str, batch_id: str, **context) -> b
             else:
                 logging.error("process_batch_results indicou falha. Fazendo rollback...")
                 db.rollback()
-                # Levantar erro para falhar a task do Airflow
                 raise RuntimeError(f"Falha no processamento do arquivo de resultados do batch {batch_id}.")
 
         except Exception as e:
-            # Captura erros do check_batch_status, process_batch_results ou commit
             logging.error(f"Erro durante task_process_uc_generation_batch para run_id={run_id}, batch_id={batch_id}: {e}", exc_info=True)
             logging.info("Fazendo rollback das alterações da transação (se houver)...")
-            # Rollback é seguro mesmo que nada tenha sido adicionado
             db.rollback()
             final_log_message = "FALHOU"
             raise
 
-    # Log final
     log_level = logging.INFO if task_successful else logging.ERROR
     logging.log(log_level, f"--- TASK process_uc_generation_batch {final_log_message} (run_id={run_id}) ---")
     return task_successful
@@ -816,7 +851,6 @@ def task_process_difficulty_batch(run_id: str, batch_id: str, **context) -> bool
     task_successful = False
     final_log_message = "FALHOU"
 
-    # Se for o ID falso de idempotência, sucesso imediato
     if batch_id == "fake_id_for_indepotency":
          logging.info("Batch ID é 'fake_id_for_indepotency', indicando etapa anterior pulada. Sucesso idempotente.")
          task_successful = True
@@ -826,7 +860,6 @@ def task_process_difficulty_batch(run_id: str, batch_id: str, **context) -> bool
 
     with get_session() as db:
         try:
-            # 1. Checar status do batch
             logging.info(f"Verificando status final do batch {batch_id}...")
             status, output_file_id, error_file_id = check_batch_status(batch_id)
 
@@ -837,9 +870,8 @@ def task_process_difficulty_batch(run_id: str, batch_id: str, **context) -> bool
 
             logging.info(f"Batch {batch_id} confirmado como 'completed'. output_file_id: {output_file_id}")
 
-            # 2. Chamar process_batch_results passando a sessão db
             logging.info("Iniciando processamento e adição ao banco (pendente)...")
-            # Precisa do diretório de stage e filename
+            
             _, _, _, _, s4, _, _ = _get_dirs(run_id)
             processing_ok = process_batch_results(
                 batch_id=batch_id,

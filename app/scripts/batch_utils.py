@@ -360,6 +360,7 @@ class DifficultyBatchProcessor(BaseBatchProcessor):
 
             if isinstance(uc_id, str) and isinstance(difficulty_score, int) and isinstance(justification, str):
                 record = {
+                    "request_custom_id": request_custom_id,
                     "knowledge_unit_id": uc_id,
                     "difficulty_score": difficulty_score,
                     "justification": justification

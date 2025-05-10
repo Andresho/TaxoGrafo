@@ -19,6 +19,7 @@ def upgrade():
         'knowledge_unit_evaluations_aggregated_batch',
         sa.Column('pipeline_run_id', sa.String(), sa.ForeignKey('pipeline_runs.run_id', ondelete='CASCADE'), primary_key=True),
         sa.Column('knowledge_unit_id', sa.String(), primary_key=True),
+        sa.Column('request_custom_id', sa.String(), primary_key=True, nullable=False),
         sa.Column('difficulty_score', sa.Integer(), nullable=True),
         sa.Column('justification', sa.Text(), nullable=True),
     )
