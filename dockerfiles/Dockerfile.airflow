@@ -15,7 +15,7 @@ ENV PATH="${AIRFLOW_HOME}/.local/bin:${PATH}"
 
 # Copia requirements.txt PRIMEIRO para aproveitar o cache do Docker
 # Garante que pertença ao usuário correto desde o início
-COPY --chown=${AIRFLOW_UID}:${AIRFLOW_GID} requirements.txt /requirements.txt
+COPY --chown=${AIRFLOW_UID}:${AIRFLOW_GID} ./airflow-pipeline/requirements.txt /requirements.txt
 
 # Mude para o usuário airflow ANTES de instalar com --user
 USER $AIRFLOW_UID
@@ -30,8 +30,7 @@ USER root
 RUN mkdir -p ${AIRFLOW_HOME}/dags ${AIRFLOW_HOME}/logs ${AIRFLOW_HOME}/plugins ${AIRFLOW_HOME}/scripts ${AIRFLOW_HOME}/data \
     && chown -R ${AIRFLOW_UID}:${AIRFLOW_GID} ${AIRFLOW_HOME}
 
-
-COPY --chown=${AIRFLOW_UID}:${AIRFLOW_GID} dags/ /opt/airflow/dags/
+COPY --chown=${AIRFLOW_UID}:${AIRFLOW_GID} ./airflow-pipeline/dags/ /opt/airflow/dags/
 ## Removido setup do Graphrag (agora isolado em container específico)
 ## RUN graphrag init, prompts e settings não são mais necessários aqui
 

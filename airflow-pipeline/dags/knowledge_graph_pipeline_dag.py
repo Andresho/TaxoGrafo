@@ -52,19 +52,15 @@ with DAG(
         api_version="auto",
         auto_remove=True,
         entrypoint="/bin/bash",
-        command=(
-            '-c "graphrag init --root /data/{{ dag_run.conf.get(\'pipeline_id\', dag_run.run_id) }} --force && '
-            'graphrag index --root /data/{{ dag_run.conf.get(\'pipeline_id\', dag_run.run_id) }}"'
-        ),
-        #   ' && true && sleep infinity"'
+        command='-c "graphrag index --root /graphrag_config --method standard --logger rich"',
         docker_url="unix://var/run/docker.sock",
         network_mode="bridge",
-        # Mount named volume 'pipeline_data' into container at /data
         mounts=[Mount(source='pipeline_data', target='/data', type='volume')],
         environment={
             "GRAPHRAG_MODEL": os.getenv("GRAPHRAG_MODEL"),
             "GRAPHRAG_API_KEY": os.getenv("GRAPHRAG_API_KEY"),
             "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
+            "GRAPHRAG_RUN_ID": "{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}",
         },
     )
 

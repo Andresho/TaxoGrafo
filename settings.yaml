@@ -58,7 +58,7 @@ embed_text:
 input:
   type: file # or blob
   file_type: text # or csv
-  base_dir: "input"
+  base_dir: "/data/${GRAPHRAG_RUN_ID}/input"
   file_encoding: utf-8
   file_pattern: ".*\\.txt$$"
 
@@ -81,7 +81,7 @@ reporting:
 
 output:
   type: file # [file, blob, cosmosdb]
-  base_dir: "output"
+  base_dir: "/data/${GRAPHRAG_RUN_ID}/output"
 
 ### Workflow settings ###
 

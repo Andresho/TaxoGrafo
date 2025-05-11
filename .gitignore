@@ -18,6 +18,11 @@ graphrag_outputs/
 pipeline_workdir/
 output/
 
+/data/*
+!/data/input/
+/data/input/*
+!/data/input/.gitkeep
+
 # Airflow-generated files
 airflow-pipeline/logs/
 airflow-pipeline/data/

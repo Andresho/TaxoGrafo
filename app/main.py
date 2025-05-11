@@ -142,11 +142,7 @@ def init_pipeline(run_id: str):
         # Se não existe, cria a estrutura e copia settings e input
         if not run_dir.exists():
             run_dir.mkdir(parents=True, exist_ok=False)
-            src_settings = base_dir / "settings.yaml"
-            dst_settings = run_dir / "settings.yaml"
-            if not src_settings.exists():
-                raise HTTPException(status_code=500, detail="settings.yaml not found in base data dir")
-            shutil.copy(src_settings, dst_settings)
+
             src_input = base_dir / "input"
             dst_input = run_dir / "input"
             if not src_input.exists():
