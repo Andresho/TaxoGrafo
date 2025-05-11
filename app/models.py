@@ -1,6 +1,7 @@
-from sqlalchemy import Column, String, TIMESTAMP, JSON, Integer, Float, Text, ForeignKey
+from sqlalchemy import Table, Column, String, TIMESTAMP, JSON, Integer, Float, Text, ForeignKey, Boolean, ForeignKeyConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
+import uuid
 
 from db import Base
 
@@ -103,9 +104,45 @@ class GraphragTextUnit(Base):
     entity_ids = Column(JSON)
     relationship_ids = Column(JSON)
     covariate_ids = Column(JSON)
-    # ------------------------
-    # UC origins table
-    # ------------------------
+
+
+difficulty_group_origin_association = Table('difficulty_group_origin_association', Base.metadata,
+    Column('pipeline_run_id', String, primary_key=True),
+    Column('comparison_group_id', String,
+            ForeignKey('difficulty_comparison_groups.comparison_group_id'),
+            primary_key=True),
+    Column('origin_id', String, primary_key=True),
+
+    ForeignKeyConstraint(
+        ['pipeline_run_id', 'origin_id'],
+        ['knowledge_unit_origins.pipeline_run_id',
+            'knowledge_unit_origins.origin_id']
+    ),
+    Column('is_seed_origin', Boolean, default=False, nullable=False)
+)
+
+
+class DifficultyComparisonGroup(Base):
+    __tablename__ = "difficulty_comparison_groups"
+
+    pipeline_run_id = Column(String, ForeignKey('pipeline_runs.run_id', ondelete='CASCADE'), primary_key=True)
+    comparison_group_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+
+    bloom_level = Column(String, nullable=False)
+    coherence_level = Column(String, nullable=False)
+    llm_batch_request_custom_id = Column(String, nullable=False, index=True)
+
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+=    compared_origins = relationship(
+        "KnowledgeUnitOrigin",
+        secondary=difficulty_group_origin_association,
+=        backref="difficulty_comparison_groups"
+    )
+
+    evaluations = relationship("KnowledgeUnitEvaluationsAggregatedBatch", back_populates="comparison_group")
+
+
 class KnowledgeUnitOrigin(Base):
     __tablename__ = 'knowledge_unit_origins'
     pipeline_run_id = Column(String, ForeignKey('pipeline_runs.run_id', ondelete='CASCADE'), primary_key=True)
@@ -168,6 +205,17 @@ class KnowledgeUnitEvaluationsAggregatedBatch(Base):
     __tablename__ = 'knowledge_unit_evaluations_aggregated_batch'
     pipeline_run_id = Column(String, ForeignKey('pipeline_runs.run_id', ondelete='CASCADE'), primary_key=True)
     knowledge_unit_id = Column(String, primary_key=True)
-    request_custom_id = Column(String, primary_key=True, nullable=False)
+
+    comparison_group_id = Column(String, primary_key=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['pipeline_run_id', 'comparison_group_id'],
+            ['difficulty_comparison_groups.pipeline_run_id', 'difficulty_comparison_groups.comparison_group_id']
+        ),
+    )
+
     difficulty_score = Column(Integer)
     justification = Column(Text)
+
+    comparison_group = relationship("DifficultyComparisonGroup", back_populates="evaluations")

@@ -12,6 +12,8 @@ import datetime
 import json
 import numpy as np
 
+import uuid
+import models
 from scripts.llm_client import get_llm_strategy
 from scripts.io_utils import save_dataframe, load_dataframe
 from scripts.data_lake import DataLake
@@ -542,23 +544,23 @@ def task_define_relationships(run_id: str, **context):
 def task_submit_difficulty_batch(run_id: str, **context):
     logging.info(f"--- TASK: submit_difficulty_batch (run_id={run_id}) ---")
 
-    with get_session() as db:
-        existing_evals = crud_knowledge_unit_evaluations_batch.get_knowledge_unit_evaluations_batch(db, run_id)
+    with get_session() as db_read:
+        existing_evals = crud_knowledge_unit_evaluations_batch.get_knowledge_unit_evaluations_batch(db_read, run_id)
         if existing_evals:
-            fake_batch_id = "fake_id_for_difficulty_evals_exist"
+            fake_batch_id = "fake_id_for_indepotency"
             logging.info(
-                f"Avaliações de dificuldade já existem para run_id={run_id}. Pulando. Retornando fake batch_id={fake_batch_id}")
+                f"Dados de dificuldade (avaliações) já podem existir para run_id={run_id}. Pulando. Retornando fake batch_id={fake_batch_id}")
             return fake_batch_id
 
-        generated_ucs_raw_list = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
+        generated_ucs_raw_list = crud_generated_ucs_raw.get_generated_ucs_raw(db_read, run_id)
         if not generated_ucs_raw_list:
             logging.warning("Nenhuma UC gerada (raw) para avaliar dificuldade. Pulando submissão de batch.")
-            return "fake_id_for_no_ucs_to_evaluate"
+            return "fake_id_for_indepotency"
 
-        all_knowledge_origins_list = crud_knowledge_unit_origins.get_knowledge_unit_origins(db, run_id)
+        all_knowledge_origins_list = crud_knowledge_unit_origins.get_knowledge_unit_origins(db_read, run_id)
         if not all_knowledge_origins_list:
-            logging.error(f"Knowledge Origins não encontradas para run_id={run_id}, mas UCs geradas existem.")
-            return "fake_id_for_no_origins"
+            logging.error(f"Knowledge Origins não encontradas para run_id={run_id}, mas UCs geradas existem. Crítico.")
+            return "fake_id_for_indepotency"
 
     ucs_by_origin_then_bloom: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(lambda: defaultdict(dict))
     for uc_raw in generated_ucs_raw_list:
@@ -572,73 +574,147 @@ def task_submit_difficulty_batch(run_id: str, **context):
         min_evaluations_per_origin=MIN_EVALUATIONS_PER_UC,
         difficulty_batch_size=DIFFICULTY_BATCH_SIZE
     )
-    paired_origin_ids_list = scheduler.generate_origin_pairings()
+    paired_origin_sets_with_coherence = scheduler.generate_origin_pairings()
 
-    if not paired_origin_ids_list:
-        logging.info("Nenhum conjunto de origens foi pareado para avaliação. Nada a submeter.")
-        return "fake_id_for_no_origin_pairs"
-
-    requests_for_llm_batch: List[Dict[str, Any]] = []
-    llm_request_index = 0
+    if not paired_origin_sets_with_coherence:
+        logging.info("Nenhum conjunto de origens foi pareado pelo scheduler para avaliação. Nada a submeter.")
+        return "fake_id_for_indepotency"
 
     try:
         with open(PROMPT_UC_DIFFICULTY_FILE, 'r', encoding='utf-8') as f:
             prompt_template = f.read()
     except Exception as e:
-        logging.error(f"Erro lendo prompt de dificuldade: {e}")
-        raise ValueError(f"Erro lendo prompt de dificuldade: {e}")
+        logging.error(f"Erro lendo prompt de dificuldade '{PROMPT_UC_DIFFICULTY_FILE}': {e}", exc_info=True)
+        raise ValueError(f"Erro crítico: Falha ao ler prompt de dificuldade: {e}")
 
-    for origin_id_tuple in paired_origin_ids_list:
-        for bloom_level in BLOOM_ORDER:
-            ucs_for_this_llm_request: List[Dict[str, str]] = []
-            valid_llm_request_for_this_bloom = True
+    requests_for_llm_batch: List[Dict[str, Any]] = []
 
-            for origin_id_in_tuple in origin_id_tuple:
-                uc_data = ucs_by_origin_then_bloom.get(str(origin_id_in_tuple), {}).get(bloom_level)
-                if uc_data and uc_data.get('uc_id') and uc_data.get('uc_text'):
-                    ucs_for_this_llm_request.append({
-                        "uc_id": str(uc_data['uc_id']),
-                        "uc_text": str(uc_data['uc_text'])
+    with get_session() as db_for_groups_write:
+        num_groups_created_for_llm = 0
+
+        for pairing_info in paired_origin_sets_with_coherence:
+            origin_ids_in_current_pairing: Tuple[str, ...] = pairing_info["origin_ids"]
+            coherence_level_of_pairing: str = pairing_info["coherence_level"]
+            seed_origin_id_for_pairing: str = pairing_info["seed_id_for_batch"]
+
+            for current_bloom_level in BLOOM_ORDER:
+                ucs_for_this_llm_request: List[Dict[str, str]] = []
+                can_form_valid_llm_request = True
+
+                for origin_id_in_group in origin_ids_in_current_pairing:
+                    uc_data = ucs_by_origin_then_bloom.get(str(origin_id_in_group), {}).get(current_bloom_level)
+                    if uc_data and uc_data.get('uc_id') and uc_data.get('uc_text'):
+                        ucs_for_this_llm_request.append({
+                            "uc_id": str(uc_data['uc_id']),
+                            "uc_text": str(uc_data['uc_text'])
+                        })
+                    else:
+                        can_form_valid_llm_request = False
+                        logging.debug(
+                            f"Origem {origin_id_in_group} no par {origin_ids_in_current_pairing} não tem UC para Bloom {current_bloom_level}. "
+                            f"Pulando request LLM para este grupo/bloom específico.")
+                        break
+
+                if can_form_valid_llm_request and len(ucs_for_this_llm_request) == DIFFICULTY_BATCH_SIZE:
+                    num_groups_created_for_llm += 1
+
+                    generated_comparison_group_id = str(uuid.uuid4())
+                    openai_llm_custom_id = f"comp_group={generated_comparison_group_id}"
+
+                    new_db_comparison_group = models.DifficultyComparisonGroup(
+                        pipeline_run_id=run_id,
+                        comparison_group_id=generated_comparison_group_id,
+                        bloom_level=current_bloom_level,
+                        coherence_level=coherence_level_of_pairing,
+                        llm_batch_request_custom_id=openai_llm_custom_id
+                    )
+                    db_for_groups_write.add(new_db_comparison_group)
+
+                    try:
+                        logging.debug(
+                            f"Flushing DB session to persist DifficultyComparisonGroup: {generated_comparison_group_id}")
+                        db_for_groups_write.flush()
+                    except Exception as flush_exc:
+                        logging.error(
+                            f"DB Flush FAILED for ComparisonGroup {generated_comparison_group_id} (run_id: {run_id}): {flush_exc}",
+                            exc_info=True)
+                        db_for_groups_write.rollback()
+                        raise 
+
+                    association_entries_to_insert = []
+                    for origin_id_in_group_item in origin_ids_in_current_pairing:
+                        association_entries_to_insert.append({
+                            "pipeline_run_id": run_id,
+                            "comparison_group_id": generated_comparison_group_id,
+                            "origin_id": origin_id_in_group_item,
+                            "is_seed_origin": (origin_id_in_group_item == seed_origin_id_for_pairing)
+                        })
+
+                    if association_entries_to_insert:
+                        try:
+                            logging.debug(
+                                f"Inserting {len(association_entries_to_insert)} associations for ComparisonGroup {generated_comparison_group_id}")
+                            db_for_groups_write.execute(models.difficulty_group_origin_association.insert(),
+                                                        association_entries_to_insert)
+                        except Exception as assoc_exc:
+                            logging.error(
+                                f"DB Insert FAILED for associations of ComparisonGroup {generated_comparison_group_id} (run_id: {run_id}): {assoc_exc}",
+                                exc_info=True)
+                            db_for_groups_write.rollback()
+                            raise
+
+                    formatted_prompt_text_for_llm = _format_difficulty_prompt(ucs_for_this_llm_request, prompt_template)
+                    request_body_for_llm = {
+                        "model": LLM_MODEL,
+                        "messages": [{"role": "system", "content": "Você é um especialista em educação..."},
+                                     {"role": "user", "content": formatted_prompt_text_for_llm}],
+                        "temperature": LLM_TEMPERATURE_DIFFICULTY,
+                        "response_format": {"type": "json_object"}
+                    }
+                    requests_for_llm_batch.append({
+                        "custom_id": openai_llm_custom_id,
+                        "method": "POST",
+                        "url": "/v1/chat/completions",
+                        "body": request_body_for_llm
                     })
-                else:
-                    valid_llm_request_for_this_bloom = False
-                    logging.debug(
-                        f"Origem {origin_id_in_tuple} no conjunto {origin_id_tuple} não tem UC para Bloom {bloom_level}. Pulando LLM request.")
-                    break
+                elif can_form_valid_llm_request and ucs_for_this_llm_request:
+                    logging.warning(
+                        f"LLM request para par {origin_ids_in_current_pairing} e nível Bloom {current_bloom_level} "
+                        f"teria {len(ucs_for_this_llm_request)} UCs, mas são necessárias {DIFFICULTY_BATCH_SIZE}. Pulando este LLM request específico.")
 
-            if valid_llm_request_for_this_bloom and len(ucs_for_this_llm_request) == DIFFICULTY_BATCH_SIZE:
-                formatted_prompt_text = _format_difficulty_prompt(ucs_for_this_llm_request, prompt_template)
-
-                request_custom_id = f"diff_eval_{run_id}_{bloom_level}_{llm_request_index}"
-                llm_request_index += 1
-
-                request_body = {
-                    "model": LLM_MODEL,
-                    "messages": [{"role": "system", "content": "Você é um especialista em educação..."},
-                                 {"role": "user", "content": formatted_prompt_text}],
-                    "temperature": LLM_TEMPERATURE_DIFFICULTY,
-                    "response_format": {"type": "json_object"}
-                }
-                requests_for_llm_batch.append({
-                    "custom_id": request_custom_id,
-                    "method": "POST",
-                    "url": "/v1/chat/completions",
-                    "body": request_body
-                })
-            elif valid_llm_request_for_this_bloom and ucs_for_this_llm_request:
-                logging.warning(f"Batch de LLM para conjunto {origin_id_tuple} e nível {bloom_level} "
-                                f"teria {len(ucs_for_this_llm_request)} UCs != {DIFFICULTY_BATCH_SIZE}. Pulando.")
+        if requests_for_llm_batch:
+            logging.info(f"Attempting to commit {num_groups_created_for_llm} DifficultyComparisonGroup records "
+                         f"and their associations to DB for run_id {run_id}.")
+            try:
+                db_for_groups_write.commit()
+                logging.info("Successfully committed new comparison groups and associations to DB.")
+            except Exception as final_commit_exc:
+                logging.error(
+                    f"FINAL DB COMMIT FAILED for new comparison groups (run_id: {run_id}): {final_commit_exc}",
+                    exc_info=True)
+                db_for_groups_write.rollback()
+                raise 
+        elif num_groups_created_for_llm > 0 and not requests_for_llm_batch:
+            logging.warning(
+                f"{num_groups_created_for_llm} groups were prepared in session but no LLM requests were generated. Rolling back DB changes.")
+            db_for_groups_write.rollback()
+        else:
+            logging.info("No comparison groups were added to the DB session and no LLM requests generated.")
 
     if not requests_for_llm_batch:
-        logging.info("Nenhum request de LLM para avaliação de dificuldade foi gerado. Nada a submeter.")
-        return "fake_id_for_no_llm_requests_generated"
+        logging.info(
+            "Nenhum request de LLM para avaliação de dificuldade foi gerado após processar todos os pares/níveis. Nada a submeter ao LLM.")
+        return "fake_id_for_indepotency"
 
-    llm = get_llm_strategy() 
-    _, _, _, _, _, _, batch_files_dir_path = _get_dirs(run_id)
-    batch_files_dir_path.mkdir(parents=True, exist_ok=True)
+    llm = get_llm_strategy()
+
+    _, _, _, s4_input_dir, _, _, batch_files_overall_dir = _get_dirs(run_id)
+
+    batch_files_overall_dir.mkdir(parents=True, exist_ok=True)
+
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    batch_input_filename = f"uc_difficulty_batch_input_{timestamp}.jsonl"
-    batch_input_path = batch_files_dir_path / batch_input_filename
+    batch_input_filename = f"uc_difficulty_batch_input_{timestamp}_{run_id}.jsonl"
+    batch_input_path = batch_files_overall_dir / batch_input_filename
 
     DataLake.write_jsonl(requests_for_llm_batch, batch_input_path)
     logging.info(f"Arquivo batch de dificuldade ({len(requests_for_llm_batch)} requests) criado: {batch_input_path}")
@@ -655,7 +731,9 @@ def task_submit_difficulty_batch(run_id: str, **context):
         logging.info(f"Batch job de dificuldade submetido. Batch ID: {batch_job_id}")
         return batch_job_id
     except Exception as e:
-        logging.error(f"Erro durante upload ou criação do batch job de dificuldade: {e}", exc_info=True)
+        logging.error(f"Erro durante upload ou criação do batch job de dificuldade (run_id: {run_id}): {e}",
+                      exc_info=True)
+        # Os grupos de comparação já foram commitados.
         raise
 
 def task_finalize_outputs(run_id: str, **context):
@@ -669,7 +747,7 @@ def task_finalize_outputs(run_id: str, **context):
     """
     logging.info(f"--- TASK: finalize_outputs (run_id={run_id}) ---")
     task_successful = False
-    final_log_message = "FALHOU
+    final_log_message = "FALHOU"
 
     with get_session() as db:
         try:

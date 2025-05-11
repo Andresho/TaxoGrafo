@@ -28,7 +28,7 @@ LLM_MODEL = os.environ.get('LLM_MODEL', "gpt-4o-mini")
 LLM_TEMPERATURE_GENERATION = float(os.environ.get('LLM_TEMPERATURE_GENERATION', 0.2))
 LLM_TEMPERATURE_DIFFICULTY = float(os.environ.get('LLM_TEMPERATURE_DIFFICULTY', 0.1))
 DIFFICULTY_BATCH_SIZE = int(os.environ.get('DIFFICULTY_BATCH_SIZE', 5))
-MIN_EVALUATIONS_PER_UC = int(os.environ.get('MIN_EVALUATIONS_PER_UC', 1)) # Simplificado para 1
+MIN_EVALUATIONS_PER_UC = int(os.environ.get('MIN_EVALUATIONS_PER_UC', 3))
 # BATCH API não usa concorrência configurável do nosso lado
 # UC_GENERATION_BATCH_SIZE = 20 # Não relevante para Batch API (tamanho do arquivo é o limite)
 

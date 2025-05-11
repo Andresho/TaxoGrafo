@@ -334,12 +334,96 @@ class GenerationBatchProcessor(BaseBatchProcessor):
 class DifficultyBatchProcessor(BaseBatchProcessor):
     """Processes batch results for difficulty assessment."""
 
-    def parse_inner(self, inner_data: Dict[str, Any], request_custom_id: str, run_id: str) -> Tuple[
+    def _process_line_content(self, line_content: str, line_number: int) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Parses the JSON structure of a single line from the batch output file,
+        validates the response, extracts comparison_group_id from custom_id,
+        and delegates to _parse_llm_response_content.
+        Returns a tuple: (list_of_processed_items_from_line, number_of_errors_in_line).
+        """
+        line_errors = 0
+        items_from_line: List[Dict[str, Any]] = []
+
+        line_data = json.loads(line_content)
+
+        batch_line_custom_id = line_data.get("custom_id", f"unknown_custom_id_line_{line_number}")
+
+        comparison_group_id_for_items: Optional[str] = None
+        if batch_line_custom_id.startswith("comp_group="):
+            parts = batch_line_custom_id.split("=", 1)
+            if len(parts) > 1 and parts[1]:
+                comparison_group_id_for_items = parts[1]
+            else:
+                logging.error(
+                    f"Malformed custom_id from OpenAI (empty after 'comp_group='): '{batch_line_custom_id}' "
+                    f"on line {line_number} of batch {self.batch_id} (run_id: {self.run_id})."
+                )
+                return items_from_line, 1
+        else:
+            logging.error(
+                f"Unexpected custom_id format from OpenAI: '{batch_line_custom_id}'. Expected 'comp_group=ID'. "
+                f"Line {line_number}, batch {self.batch_id}, run_id {self.run_id}."
+            )
+            return items_from_line, 1
+
+        if not comparison_group_id_for_items:
+            logging.error(
+                f"Failed to extract a valid comparison_group_id from custom_id: '{batch_line_custom_id}' "
+                f"on line {line_number} of batch {self.batch_id} (run_id: {self.run_id})."
+            )
+            return items_from_line, 1
+
+        error_payload = line_data.get("error")
+        if error_payload:
+            msg = error_payload.get('message', str(error_payload))
+            logging.error(
+                f"LLM API error on line {line_number} (OpenAI custom_id: {batch_line_custom_id}, "
+                f"parsed comp_group_id: {comparison_group_id_for_items}, run_id: {self.run_id}): {msg}")
+            return items_from_line, 1
+
+        response_payload = line_data.get("response")
+        if not response_payload or response_payload.get("status_code") != 200:
+            status = response_payload.get('status_code', 'N/A') if response_payload else 'N/A'
+            logging.warning(
+                f"Non-200 status ({status}) on line {line_number} (OpenAI custom_id: {batch_line_custom_id}, "
+                f"parsed comp_group_id: {comparison_group_id_for_items}, run_id: {self.run_id}). Response: {str(response_payload)[:200]}"
+            )
+            return items_from_line, 1
+
+        body = response_payload.get("body", {})
+        choices = body.get("choices")
+        if not choices or not isinstance(choices, list) or not choices[0]:
+            logging.warning(
+                f"Missing or invalid 'choices' in response body on line {line_number} "
+                f"(OpenAI custom_id: {batch_line_custom_id}, parsed comp_group_id: {comparison_group_id_for_items}, run_id: {self.run_id}).")
+            return items_from_line, 1
+
+        message = choices[0].get("message", {})
+        message_content_str = message.get("content")
+
+        if not message_content_str:
+            logging.warning(
+                f"No 'content' in LLM message on line {line_number} "
+                f"(OpenAI custom_id: {batch_line_custom_id}, parsed comp_group_id: {comparison_group_id_for_items}, run_id: {self.run_id}).")
+            return items_from_line, 1
+
+        parsed_items, parsing_errors = self._parse_llm_response_content(
+            message_content_str,
+            batch_line_custom_id,
+            comparison_group_id_for_items
+        )
+        if parsed_items:
+            items_from_line.extend(parsed_items)
+        line_errors += parsing_errors
+
+        return items_from_line, line_errors
+
+    def parse_inner(self, inner_data: Dict[str, Any], comparison_group_id: str, run_id: str) -> Tuple[
         List[Dict[str, Any]], int]:
         """
         Parses `inner_data` expecting 'difficulty_assessments'.
-        `request_custom_id` is the custom_id of the batch request, used here for logging context if needed.
-        The actual uc_id is expected inside each assessment item.
+        `comparison_group_id` is the ID of the comparison group this assessment belongs to.
+        The uc_id for each specific assessment is expected inside each item of 'difficulty_assessments'.
         """
         items = []
         errors = 0
@@ -348,7 +432,7 @@ class DifficultyBatchProcessor(BaseBatchProcessor):
         if not isinstance(difficulty_assessments, list):
             logging.warning(
                 f"Expected 'difficulty_assessments' to be a list in inner_data "
-                f"(batch request custom_id: {request_custom_id}, run: {run_id}). "
+                f"(for comparison_group_id: {comparison_group_id}, run: {run_id}). "
                 f"Found: {type(difficulty_assessments)}. Data (first 200): {str(inner_data)[:200]}"
             )
             return items, 1
@@ -360,7 +444,7 @@ class DifficultyBatchProcessor(BaseBatchProcessor):
 
             if isinstance(uc_id, str) and isinstance(difficulty_score, int) and isinstance(justification, str):
                 record = {
-                    "request_custom_id": request_custom_id,
+                    "comparison_group_id": comparison_group_id,
                     "knowledge_unit_id": uc_id,
                     "difficulty_score": difficulty_score,
                     "justification": justification
@@ -370,7 +454,7 @@ class DifficultyBatchProcessor(BaseBatchProcessor):
                 errors += 1
                 logging.warning(
                     f"Invalid difficulty assessment format at index {assessment_idx} "
-                    f"(batch request custom_id: {request_custom_id}, run: {run_id}). "
+                    f"(for comparison_group_id: {comparison_group_id}, run: {run_id}). "
                     f"Assessment data (first 100): {str(assessment_data)[:100]}"
                 )
         return items, errors
