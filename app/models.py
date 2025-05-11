@@ -134,10 +134,10 @@ class DifficultyComparisonGroup(Base):
 
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
-=    compared_origins = relationship(
+    compared_origins = relationship(
         "KnowledgeUnitOrigin",
         secondary=difficulty_group_origin_association,
-=        backref="difficulty_comparison_groups"
+        backref="difficulty_comparison_groups"
     )
 
     evaluations = relationship("KnowledgeUnitEvaluationsAggregatedBatch", back_populates="comparison_group")
