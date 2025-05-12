@@ -7,6 +7,7 @@ import scripts.pipeline_tasks as pt
 import scripts.batch_utils as batch_utils
 from db import SessionLocal, get_session
 import crud.pipeline_run as crud_runs
+import gets
 
 import os
 from pathlib import Path
@@ -19,8 +20,8 @@ app = FastAPI(
     description="API para expor chamadas aos scripts de pipeline",
     version="0.1.0",
 )
- 
 
+app.include_router(gets.router)
 
 @app.get("/", tags=["health"])
 async def health_check():
