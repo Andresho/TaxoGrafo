@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, Set
 from sqlalchemy import or_
 
 import crud
@@ -344,5 +344,213 @@ def get_uc_neighborhood(
             next_level_uc_ids.add(uc.uc_id)
             
         current_level_uc_ids = next_level_uc_ids
+
+    return schemas.GraphResponse(nodes=list(nodes_map.values()), edges=edges_list)
+
+
+
+@router.get(
+    "/runs/{run_id}/origins-hierarchy/roots",
+    response_model=List[schemas.KnowledgeUnitOriginResponse],  # Usando o schema que já existe para listar origens
+    summary="List Root-Level Knowledge Unit Origins"
+)
+def list_root_origins(
+        run_id: str,
+        skip: int = Query(0, ge=0),
+        limit: int = Query(100, ge=1, le=1000),
+        origin_type: Optional[str] = Query(None, description="Filter root origins by type (e.g., entity, community)"),
+        db: Session = Depends(get_db)
+):
+    """
+    Retrieves a list of root-level knowledge unit origins (those without a parent)
+    for a specific pipeline run.
+    """
+    run = crud.pipeline_run.get_run(db, run_id=run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found")
+
+    query = db.query(models.KnowledgeUnitOrigin).filter(
+        models.KnowledgeUnitOrigin.pipeline_run_id == run_id,
+        # Verifica se parent_community_id_of_origin é NULL ou uma string vazia,
+        # dependendo de como você armazena "sem pai".
+        # SQLAlchemy trata None como IS NULL. Se você usa string vazia, ajuste.
+        models.KnowledgeUnitOrigin.parent_community_id_of_origin == None
+    )
+
+    if origin_type:
+        query = query.filter(models.KnowledgeUnitOrigin.origin_type == origin_type)
+
+    # Adicionar ordenação se desejar, ex: por title
+    query = query.order_by(models.KnowledgeUnitOrigin.title)
+
+    roots = query.offset(skip).limit(limit).all()
+    return roots
+
+
+@router.get(
+    "/runs/{run_id}/origins-hierarchy/children/{parent_origin_id}",
+    response_model=List[schemas.KnowledgeUnitOriginResponse],
+    summary="List Child Knowledge Unit Origins"
+)
+def list_child_origins(
+        run_id: str,
+        parent_origin_id: str,
+        skip: int = Query(0, ge=0),
+        limit: int = Query(100, ge=1, le=1000),
+        origin_type: Optional[str] = Query(None, description="Filter child origins by type (e.g., entity, community)"),
+        db: Session = Depends(get_db)
+):
+    """
+    Retrieves a list of direct child knowledge unit origins for a given parent origin_id
+    within a specific pipeline run.
+    """
+    run = crud.pipeline_run.get_run(db, run_id=run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found")
+
+    # Opcional: Verificar se o parent_origin_id existe para esta run
+    # parent_exists = db.query(models.KnowledgeUnitOrigin).filter_by(pipeline_run_id=run_id, origin_id=parent_origin_id).first()
+    # if not parent_exists:
+    #     raise HTTPException(status_code=404, detail=f"Parent origin '{parent_origin_id}' not found in run '{run_id}'")
+
+    query = db.query(models.KnowledgeUnitOrigin).filter(
+        models.KnowledgeUnitOrigin.pipeline_run_id == run_id,
+        models.KnowledgeUnitOrigin.parent_community_id_of_origin == parent_origin_id
+    )
+
+    if origin_type:
+        query = query.filter(models.KnowledgeUnitOrigin.origin_type == origin_type)
+
+    # Adicionar ordenação se desejar, ex: por title
+    query = query.order_by(models.KnowledgeUnitOrigin.title)
+
+    children = query.offset(skip).limit(limit).all()
+    return children
+
+
+@router.get(
+    "/runs/{run_id}/origins-hierarchy/parent/{child_origin_id}",
+    response_model=Optional[schemas.KnowledgeUnitOriginResponse],  # Pode não ter pai, então Optional
+    summary="Get Parent of a Knowledge Unit Origin"
+)
+def get_parent_origin(
+        run_id: str,
+        child_origin_id: str,
+        db: Session = Depends(get_db)
+):
+    """
+    Retrieves the parent knowledge unit origin for a given child_origin_id
+    within a specific pipeline run. Returns null if the origin has no parent or is not found.
+    """
+    run = crud.pipeline_run.get_run(db, run_id=run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found")
+
+    child_origin = db.query(models.KnowledgeUnitOrigin).filter(
+        models.KnowledgeUnitOrigin.pipeline_run_id == run_id,
+        models.KnowledgeUnitOrigin.origin_id == child_origin_id
+    ).first()
+
+    if not child_origin:
+        raise HTTPException(status_code=404, detail=f"Child origin '{child_origin_id}' not found in run '{run_id}'")
+
+    if not child_origin.parent_community_id_of_origin:
+        return None  # Origem é uma raiz, não tem pai
+
+    parent_origin = db.query(models.KnowledgeUnitOrigin).filter(
+        models.KnowledgeUnitOrigin.pipeline_run_id == run_id,
+        models.KnowledgeUnitOrigin.origin_id == child_origin.parent_community_id_of_origin
+    ).first()
+
+    # Se parent_community_id_of_origin tiver um valor mas não encontrarmos uma origem com esse ID,
+    # isso indicaria uma inconsistência nos dados. Por ora, retornamos None ou um 404.
+    if not parent_origin:
+        # Isso pode acontecer se o parent_community_id_of_origin for um ID que não existe como uma 'origin' na tabela.
+        # O ideal é que todos os parent_community_id_of_origin (que não são None) referenciem um origin_id válido.
+        # raise HTTPException(status_code=404, detail=f"Parent origin with ID '{child_origin.parent_community_id_of_origin}' not found, data inconsistency suspected.")
+        return None  # Ou tratar como "não encontrado" para simplificar
+
+    return parent_origin
+
+
+
+
+
+def format_origin_as_graph_node(origin: models.KnowledgeUnitOrigin) -> schemas.GraphNode: # Reutilizando GraphNode por simplicidade
+    """Converte um KnowledgeUnitOrigin para um formato de nó de grafo."""
+    return schemas.GraphNode(
+        id=origin.origin_id,
+        label=origin.title[:75] + "..." if origin.title and len(origin.title) > 75 else origin.title,
+        group=origin.origin_type, # "entity" ou "community"
+        title=origin.title, # Tooltip com título completo
+        level=str(origin.level) if origin.level is not None else None, # Nível da comunidade, se aplicável
+        # value=origin.frequency or origin.degree # Exemplo, se quiser dimensionar
+    )
+
+
+@router.get(
+    "/runs/{run_id}/origins-hierarchy/tree/{start_origin_id}",
+    response_model=schemas.GraphResponse,  # Reutilizando GraphResponse
+    summary="Get a Sub-tree of the Origins Hierarchy"
+)
+def get_origins_hierarchy_tree(
+        run_id: str,
+        start_origin_id: str,
+        depth: int = Query(2, ge=0, le=5,
+                           description="Number of levels to descend from the start_origin_id (0 = just the start node)"),
+        db: Session = Depends(get_db)
+):
+    """
+    Retrieves a sub-tree of the knowledge unit origins hierarchy,
+    starting from a specific origin_id and descending N levels.
+    """
+    run = crud.pipeline_run.get_run(db, run_id=run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found")
+
+    start_origin_db = db.query(models.KnowledgeUnitOrigin).filter(
+        models.KnowledgeUnitOrigin.pipeline_run_id == run_id,
+        models.KnowledgeUnitOrigin.origin_id == start_origin_id
+    ).first()
+
+    if not start_origin_db:
+        raise HTTPException(status_code=404, detail=f"Start origin '{start_origin_id}' not found in run '{run_id}'")
+
+    nodes_map = {start_origin_db.origin_id: format_origin_as_graph_node(start_origin_db)}
+    edges_list: List[schemas.GraphEdge] = []  # Reutilizando GraphEdge
+
+    # IDs das origens a serem processadas no nível atual da árvore
+    current_level_origin_ids: Set[str] = {start_origin_id}
+
+    # Itera pela profundidade desejada
+    for current_depth in range(depth):
+        if not current_level_origin_ids:  # Se não há mais nós para expandir
+            break
+
+        # Busca todos os filhos diretos das origens no nível atual
+        children_db = db.query(models.KnowledgeUnitOrigin).filter(
+            models.KnowledgeUnitOrigin.pipeline_run_id == run_id,
+            models.KnowledgeUnitOrigin.parent_community_id_of_origin.in_(current_level_origin_ids)
+        ).all()
+
+        next_level_origin_ids: Set[str] = set()
+
+        for child in children_db:
+            # Adiciona o nó filho se ainda não estiver no mapa
+            if child.origin_id not in nodes_map:
+                nodes_map[child.origin_id] = format_origin_as_graph_node(child)
+
+            # Adiciona a aresta do pai (que deve estar em current_level_origin_ids) para o filho
+            # O pai é child.parent_community_id_of_origin
+            if child.parent_community_id_of_origin:  # Garantir que tem pai
+                edges_list.append(schemas.GraphEdge(
+                    source=child.parent_community_id_of_origin,
+                    target=child.origin_id,
+                    label="contains"  # Ou "child_of", ou deixar sem label
+                ))
+
+            next_level_origin_ids.add(child.origin_id)  # Adiciona para a próxima iteração
+
+        current_level_origin_ids = next_level_origin_ids  # Prepara para o próximo nível
 
     return schemas.GraphResponse(nodes=list(nodes_map.values()), edges=edges_list)

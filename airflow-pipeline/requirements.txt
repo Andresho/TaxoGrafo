@@ -1,4 +1,6 @@
 pandas
-pyarrow # ou fastparquet
+pyarrow
 python-dotenv
-openai>=1.0 # Certifique-se de ter a versão que suporta Batch API
+openai>=1.0
+pypdfium2
+requests

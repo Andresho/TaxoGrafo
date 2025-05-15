@@ -1,6 +1,7 @@
 from datetime import datetime
 from pydantic import BaseModel, Field
 from typing import List, Optional
+import uuid
 
 # ------------------------------
 # Pipeline Run Schemas
@@ -105,3 +106,36 @@ class GraphEdge(BaseModel):
 class GraphResponse(BaseModel):
     nodes: List[GraphNode]
     edges: List[GraphEdge]
+
+# ------------------------------
+# Resource Schemas
+# ------------------------------
+
+class ResourceBase(BaseModel):
+    original_filename: str
+    original_mime_type: str
+
+class ResourceCreate(ResourceBase):
+    pass
+
+class ResourceUpdate(BaseModel):
+    status: Optional[str] = None
+    processed_txt_path: Optional[str] = None
+    error_message: Optional[str] = None
+    processed_at: Optional[datetime] = None
+
+class ResourceResponse(ResourceBase):
+    resource_id: uuid.UUID
+    original_file_path: str
+    processed_txt_path: Optional[str] = None
+    status: str
+    error_message: Optional[str] = None
+    uploaded_at: datetime
+    processed_at: Optional[datetime] = None
+
+    class Config:
+        orm_mode = True
+
+class PipelineInitRequest(BaseModel):
+    resource_ids: List[uuid.UUID]
+    skip_graphrag: Optional[bool] = False

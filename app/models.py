@@ -2,6 +2,7 @@ from sqlalchemy import Table, Column, String, TIMESTAMP, JSON, Integer, Float, T
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 import uuid
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 from db import Base
 
@@ -219,3 +220,23 @@ class KnowledgeUnitEvaluationsAggregatedBatch(Base):
     justification = Column(Text)
 
     comparison_group = relationship("DifficultyComparisonGroup", back_populates="evaluations")
+
+class Resource(Base):
+    __tablename__ = "resources"
+
+    resource_id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    original_filename = Column(Text, nullable=False)
+    original_mime_type = Column(String(100), nullable=False)
+    original_file_path = Column(Text, nullable=False, unique=True)
+    processed_txt_path = Column(Text, nullable=True, unique=True)
+    status = Column(String(50), nullable=False, default="uploaded", index=True) # e.g., uploaded, processing_txt, processed_txt_success, processed_txt_error
+    error_message = Column(Text, nullable=True)
+    uploaded_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    processed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class PipelineRunResource(Base):
+    __tablename__ = "pipeline_run_resources"
+
+    run_id = Column(String, ForeignKey('pipeline_runs.run_id', ondelete='CASCADE'), primary_key=True)
+    resource_id = Column(PG_UUID(as_uuid=True), ForeignKey('resources.resource_id', ondelete='CASCADE'), primary_key=True)
