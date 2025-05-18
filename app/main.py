@@ -1,10 +1,11 @@
 """
 Entry point for the Pipeline API server.
 """
-from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Path as FastAPIPath
 import scripts.pipeline_tasks as pt
 import scripts.batch_utils as batch_utils
-from db import SessionLocal, get_session
+from scripts.llm_client import get_llm_strategy
+from db import SessionLocal, get_session, get_db
 from sqlalchemy.orm import Session
 import crud.pipeline_run as crud_runs
 import gets
@@ -16,10 +17,17 @@ import time
 import schemas
 import crud.resource as crud_resource
 import crud.pipeline_run_resource as crud_pipeline_run_resource
+import crud.pipeline_batch_job as crud_batch_jobs
 import uuid
+import logging
 
 UPLOADS_ORIGINALS_DIR = Path(os.getenv("AIRFLOW_DATA_DIR", "./data")) / "uploads" / "originals"
 PROCESSED_TXT_DIR = Path(os.getenv("AIRFLOW_DATA_DIR", "./data")) / "uploads" / "processed_txt"
+
+BATCH_TYPE_UC_GENERATION = "uc_generation"
+BATCH_TYPE_DIFFICULTY_ASSESSMENT = "difficulty_assessment"
+
+VALID_BATCH_TYPES = {BATCH_TYPE_UC_GENERATION, BATCH_TYPE_DIFFICULTY_ASSESSMENT}
 
 app = FastAPI(
     title="Airflow Pipeline API",
@@ -46,29 +54,118 @@ def prepare_origins(run_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/pipeline/{run_id}/submit-uc-generation-batch", tags=["pipeline"])
-def submit_uc_generation_batch(run_id: str):
-    """Endpoint para executar task_submit_uc_generation_batch em contexto de run_id."""
+@app.post("/pipeline/{run_id}/submit-batch/{batch_type}", tags=["pipeline_batch_jobs"])
+def submit_llm_batch(
+    run_id: str,
+    batch_type: str = FastAPIPath(..., description=f"Type of batch to submit. Valid types: {list(VALID_BATCH_TYPES)}"),
+    db: Session = Depends(get_db)
+):
+    """
+    Submits a batch job of the specified type (e.g., uc_generation, difficulty_assessment)
+    to the LLM for a given pipeline run.
+    Manages job state in the database for idempotency and tracking.
+    """
+    if batch_type not in VALID_BATCH_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid batch_type: {batch_type}. Valid types are: {list(VALID_BATCH_TYPES)}")
+
+    db_run = crud_runs.get_run(db, run_id)
+    if not db_run:
+        raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found.")
+
+    job_record = crud_batch_jobs.create_or_get_pipeline_batch_job(
+        db,
+        pipeline_run_id=run_id,
+        batch_type=batch_type,
+        initial_status=crud_batch_jobs.STATUS_PENDING_SUBMISSION # Tenta resetar para este estado se falhou antes
+    )
+    db.flush()
+
+    if job_record.status in [crud_batch_jobs.STATUS_SUBMITTED, crud_batch_jobs.STATUS_PENDING_PROCESSING, crud_batch_jobs.STATUS_COMPLETED]:
+        logging.info(f"Batch job (id: {job_record.id}, type: {batch_type}, run: {run_id}) already in status {job_record.status}. LLM Batch ID: {job_record.llm_batch_id}. Skipping submission.")
+        return {
+            "status": "skipped_already_active_or_completed",
+            "message": f"Batch job already in status {job_record.status}.",
+            "pipeline_run_id": run_id,
+            "batch_type": batch_type,
+            "job_id": job_record.id,
+            "llm_batch_id": job_record.llm_batch_id
+        }
+
+    if job_record.status != crud_batch_jobs.STATUS_PENDING_SUBMISSION:
+        crud_batch_jobs.update_pipeline_batch_job(
+            db,
+            job_id=job_record.id,
+            status=crud_batch_jobs.STATUS_PENDING_SUBMISSION,
+            llm_batch_id="",
+            last_error=""
+        )
+    db.commit()
+
+    llm_batch_id_from_provider = None
     try:
-        batch_id = pt.task_submit_uc_generation_batch(run_id)
-        return {"status": "success", "run_id": run_id, "batch_id": batch_id}
+        if batch_type == BATCH_TYPE_UC_GENERATION:
+            logging.info(f"Submitting UC generation batch for job_id: {job_record.id}")
+            llm_batch_id_from_provider = pt.task_submit_uc_generation_batch(run_id) 
+                                                                      
+        elif batch_type == BATCH_TYPE_DIFFICULTY_ASSESSMENT:
+            logging.info(f"Submitting difficulty assessment batch for job_id: {job_record.id}")
+            llm_batch_id_from_provider = pt.task_submit_difficulty_batch(run_id)
+
+        if not llm_batch_id_from_provider:
+            if job_record.status == crud_batch_jobs.STATUS_PENDING_SUBMISSION: # Ainda pendente, mas nada foi submetido
+                crud_batch_jobs.update_pipeline_batch_job(db, job_id=job_record.id, status=crud_batch_jobs.STATUS_COMPLETED, last_error="No data to submit to LLM.")
+                db.commit()
+                logging.warning(f"No LLM batch ID returned for job_id {job_record.id} (type: {batch_type}, run: {run_id}). Likely no data. Marked as COMPLETED.")
+                return {
+                    "status": "completed_no_data",
+                    "message": "No data was available to submit to the LLM batch.",
+                    "pipeline_run_id": run_id,
+                    "batch_type": batch_type,
+                    "job_id": job_record.id
+                }
+            if llm_batch_id_from_provider == "fake_id_for_indepotency": # Tratamento da idempotência antiga
+                logging.warning(f"Legacy idempotency detected from task for job_id {job_record.id}. This should be handled by job status now.")
+                
+                if job_record.status == crud_batch_jobs.STATUS_PENDING_SUBMISSION:
+                    crud_batch_jobs.update_pipeline_batch_job(db, job_id=job_record.id, status=crud_batch_jobs.STATUS_SUBMISSION_FAILED, last_error="Legacy idempotency conflict.")
+                    db.commit()
+                    raise HTTPException(status_code=500, detail="Legacy idempotency conflict during batch submission.")
+
+        # Submissão ao LLM foi bem-sucedida
+        crud_batch_jobs.update_pipeline_batch_job(
+            db,
+            job_id=job_record.id,
+            llm_batch_id=llm_batch_id_from_provider,
+            status=crud_batch_jobs.STATUS_SUBMITTED
+        )
+        db.commit()
+        logging.info(f"Batch job (id: {job_record.id}, type: {batch_type}, run: {run_id}) submitted to LLM. LLM Batch ID: {llm_batch_id_from_provider}")
+        return {
+            "status": "submitted",
+            "message": "Batch job successfully submitted to LLM.",
+            "pipeline_run_id": run_id,
+            "batch_type": batch_type,
+            "job_id": job_record.id,
+            "llm_batch_id": llm_batch_id_from_provider
+        }
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/pipeline/{run_id}/process-uc-generation-batch/{batch_id}", tags=["pipeline"])
-def process_uc_generation_batch(run_id: str, batch_id: str):
-    """Endpoint para processar resultados de geração UC em contexto de run_id."""
-
-    if batch_id == "fake_id_for_indepotency":
-        return {"status": "completed", "run_id": run_id, "processed": True}
-
-    try:
-        ok = pt.task_process_uc_generation_batch(run_id, batch_id)
-        return {"status": "success", "run_id": run_id, "processed": ok}
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        db.rollback()
+        logging.error(f"Failed to submit batch job (type: {batch_type}, run: {run_id}): {e}", exc_info=True)
+        
+        if job_record and job_record.id:
+            try:
+                with get_session() as error_db:
+                    crud_batch_jobs.update_pipeline_batch_job(
+                        error_db,
+                        job_id=job_record.id,
+                        status=crud_batch_jobs.STATUS_SUBMISSION_FAILED,
+                        last_error=str(e)[:1023]
+                    )
+                    error_db.commit()
+            except Exception as db_err:
+                logging.error(f"Additionally failed to update job status to SUBMISSION_FAILED for job_id {job_record.id}: {db_err}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to submit batch job: {e}")
 
 @app.post("/pipeline/{run_id}/define-relationships", tags=["pipeline"])
 def define_relationships(run_id: str):
@@ -79,49 +176,224 @@ def define_relationships(run_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/pipeline/{run_id}/submit-difficulty-batch", tags=["pipeline"])
-def submit_difficulty_batch(run_id: str):
-    """Endpoint para executar task_submit_difficulty_batch em contexto de run_id."""
-    try:
-        batch_id = pt.task_submit_difficulty_batch(run_id)
-        return {"status": "success", "run_id": run_id, "batch_id": batch_id}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/pipeline/{run_id}/batch-status/{batch_id}", tags=["pipeline"])
-def get_batch_status(run_id: str, batch_id: str):
-    """Endpoint para obter status de um batch em contexto de run_id."""
-    if batch_id == "fake_id_for_indepotency":
-        return {"status": "completed", "run_id": run_id, "processed": True}
+@app.get("/pipeline/{run_id}/batch-job-status/{batch_type}", tags=["pipeline_batch_jobs"])
+def get_llm_batch_job_status(
+        run_id: str,
+        batch_type: str = FastAPIPath(...,
+                                      description=f"Type of batch to check. Valid types: {list(VALID_BATCH_TYPES)}"),
+        db: Session = Depends(get_db)
+):
+    """
+    Checks the status of an LLM batch job associated with a pipeline_run_id and batch_type.
+    Updates the internal job status if the LLM job has completed.
+    """
+    if batch_type not in VALID_BATCH_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid batch_type: {batch_type}")
 
-    try:
-        status, output_file_id, error_file_id = batch_utils.check_batch_status(batch_id)
+    job_record = crud_batch_jobs.get_pipeline_batch_job(db, run_id, batch_type)
+
+    if not job_record:
+        raise HTTPException(status_code=404,
+                            detail=f"No batch job found for run_id '{run_id}' and batch_type '{batch_type}'.")
+
+    if not job_record.llm_batch_id:
+        if job_record.status == crud_batch_jobs.STATUS_COMPLETED:
+            return {
+                "job_id": job_record.id,
+                "pipeline_run_id": run_id,
+                "batch_type": batch_type,
+                "internal_status": job_record.status,
+                "llm_status": "not_applicable",
+                "message": "Job was marked as completed internally without LLM submission (e.g., no data)."
+            }
+        raise HTTPException(status_code=404,
+                            detail=f"LLM batch ID not found for job_id '{job_record.id}'. Batch may not have been submitted successfully.")
+
+    if job_record.status in [crud_batch_jobs.STATUS_PENDING_PROCESSING, crud_batch_jobs.STATUS_PROCESSING,
+                             crud_batch_jobs.STATUS_COMPLETED]:
+        logging.debug(
+            f"Internal status for job {job_record.id} is {job_record.status}. Returning 'completed' as llm_status for sensor.")
         return {
-            "status": status,
-            "run_id": run_id,
-            "output_file_id": output_file_id,
-            "error_file_id": error_file_id,
+            "job_id": job_record.id,
+            "pipeline_run_id": run_id,
+            "batch_type": batch_type,
+            "internal_status": job_record.status,
+            "llm_status": "completed",
+            "output_file_id": None,
+            "error_file_id": None, 
+            "message": f"Internal job status is {job_record.status}, implying LLM completion."
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/pipeline/{run_id}/process-difficulty-batch/{batch_id}", tags=["pipeline"])
-def process_difficulty_batch(run_id: str, batch_id: str):
-    """Endpoint para processar batch de dificuldade em contexto de run_id."""
+    if job_record.status == crud_batch_jobs.STATUS_SUBMITTED:
+        try:
+            llm_status, output_file_id, error_file_id = batch_utils.check_batch_status(job_record.llm_batch_id)
+
+            current_internal_status = job_record.status
+            new_internal_status = None
+
+            if llm_status == "completed":
+                new_internal_status = crud_batch_jobs.STATUS_PENDING_PROCESSING
+            elif llm_status in ["failed", "cancelled", "expired"]:
+                new_internal_status = crud_batch_jobs.STATUS_SUBMISSION_FAILED
+                error_message_from_llm = f"LLM job {job_record.llm_batch_id} ended with status: {llm_status}."
+                if error_file_id:
+                    try:
+                        llm_error_content_bytes = get_llm_strategy().read_file(error_file_id)
+                        llm_error_content = llm_error_content_bytes.decode('utf-8', errors='replace')[:500]
+                        error_message_from_llm += f" Error details: {llm_error_content}"
+                    except Exception as read_err:
+                        logging.warning(f"Failed to read LLM error file {error_file_id}: {read_err}")
+
+                crud_batch_jobs.update_pipeline_batch_job(db, job_id=job_record.id, status=new_internal_status,
+                                                          last_error=error_message_from_llm)
+
+            if new_internal_status and new_internal_status != current_internal_status:
+                crud_batch_jobs.update_pipeline_batch_job(db, job_id=job_record.id, status=new_internal_status)
+                db.commit()
+                logging.info(
+                    f"LLM Batch {job_record.llm_batch_id} status: {llm_status}. Internal job {job_record.id} status updated to {new_internal_status}.")
+
+            return {
+                "job_id": job_record.id,
+                "pipeline_run_id": run_id,
+                "batch_type": batch_type,
+                "internal_status": job_record.status,
+                "llm_status": llm_status,
+                "output_file_id": output_file_id,
+                "error_file_id": error_file_id
+            }
+        except Exception as e:
+            logging.error(
+                f"Error checking LLM batch status for job_id {job_record.id} (LLM ID: {job_record.llm_batch_id}): {e}",
+                exc_info=True)
+
+            raise HTTPException(status_code=503, detail=f"Failed to get LLM batch status: {e}")
+    else:
+        # Status como PENDING_SUBMISSION, SUBMISSION_FAILED, PROCESSING_FAILED
+        logging.warning(
+            f"LLM batch status check requested for job_id {job_record.id} with internal status {job_record.status}, which is not SUBMITTED.")
+        return {
+            "job_id": job_record.id,
+            "pipeline_run_id": run_id,
+            "batch_type": batch_type,
+            "internal_status": job_record.status,
+            "llm_status": "not_queried_due_to_internal_status",
+            "message": f"LLM status not queried because internal job status is '{job_record.status}'."
+        }
+
+
+@app.post("/pipeline/{run_id}/process-batch-results/{batch_type}", tags=["pipeline_batch_jobs"])
+def process_llm_batch_results(
+        run_id: str,
+        batch_type: str = FastAPIPath(...,
+                                      description=f"Type of batch results to process. Valid types: {list(VALID_BATCH_TYPES)}"),
+        db: Session = Depends(get_db)
+):
+    """
+    Processes the results of a completed LLM batch job.
+    Downloads results from LLM provider, parses them, and saves to application database.
+    Manages job state for idempotency.
+    """
+    if batch_type not in VALID_BATCH_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid batch_type: {batch_type}")
+
+    job_record = crud_batch_jobs.get_pipeline_batch_job(db, run_id, batch_type)
+
+    if not job_record:
+        raise HTTPException(status_code=404,
+                            detail=f"No batch job found for run_id '{run_id}' and batch_type '{batch_type}'.")
+
+    if job_record.status == crud_batch_jobs.STATUS_COMPLETED:
+        logging.info(
+            f"Batch results for job_id {job_record.id} (type: {batch_type}, run: {run_id}) already processed. Skipping.")
+        return {
+            "status": "skipped_already_processed",
+            "message": "Batch results have already been processed.",
+            "job_id": job_record.id,
+            "pipeline_run_id": run_id,
+            "batch_type": batch_type
+        }
+
+    if job_record.status != crud_batch_jobs.STATUS_PENDING_PROCESSING:
+        error_detail_msg = f"Cannot process results for job_id {job_record.id}. Current status is '{job_record.status}'. Expected '{crud_batch_jobs.STATUS_PENDING_PROCESSING}'."
+        if job_record.status == crud_batch_jobs.STATUS_PROCESSING:
+            error_detail_msg = f"Job_id {job_record.id} is already being processed. Concurrent processing attempt rejected."
+
+        logging.warning(error_detail_msg)
+        raise HTTPException(status_code=409, detail=error_detail_msg)  # 409 Conflict
+
+    if not job_record.llm_batch_id:
+        crud_batch_jobs.update_pipeline_batch_job(db, job_id=job_record.id,
+                                                  status=crud_batch_jobs.STATUS_PROCESSING_FAILED,
+                                                  last_error="LLM Batch ID missing at PENDING_PROCESSING stage.")
+        db.commit()
+        raise HTTPException(status_code=500,
+                            detail=f"Internal error: LLM Batch ID missing for job_id {job_record.id} at PENDING_PROCESSING stage.")
+
+    crud_batch_jobs.update_pipeline_batch_job(db, job_id=job_record.id, status=crud_batch_jobs.STATUS_PROCESSING)
+    db.commit()
+
+    processing_successful = False
     try:
-        ok = pt.task_process_difficulty_batch(run_id, batch_id)
-        return {"status": "success", "run_id": run_id, "processed": ok}
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
+        if batch_type == BATCH_TYPE_UC_GENERATION:
+            logging.info(
+                f"Processing UC generation results for job_id {job_record.id} (LLM ID: {job_record.llm_batch_id})")
+
+            processing_successful = pt.task_process_uc_generation_batch(run_id, job_record.llm_batch_id,
+                                                                        db_session_from_api=db)
+
+        elif batch_type == BATCH_TYPE_DIFFICULTY_ASSESSMENT:
+            logging.info(
+                f"Processing difficulty assessment results for job_id {job_record.id} (LLM ID: {job_record.llm_batch_id})")
+            processing_successful = pt.task_process_difficulty_batch(run_id, job_record.llm_batch_id,
+                                                                     db_session_from_api=db)
+
+        if processing_successful:
+            crud_batch_jobs.update_pipeline_batch_job(db, job_id=job_record.id, status=crud_batch_jobs.STATUS_COMPLETED)
+            db.commit()
+            logging.info(f"Successfully processed and saved results for job_id {job_record.id}.")
+            return {
+                "status": "success_processed",
+                "message": "Batch results successfully processed and saved.",
+                "job_id": job_record.id
+            }
+        else:
+            crud_batch_jobs.update_pipeline_batch_job(db, job_id=job_record.id,
+                                                      status=crud_batch_jobs.STATUS_PROCESSING_FAILED,
+                                                      last_error="Processing logic returned failure.")
+            db.commit()
+            logging.error(
+                f"Processing logic returned failure for job_id {job_record.id}. Status set to PROCESSING_FAILED.")
+            raise HTTPException(status_code=500, detail=f"Failed to process batch results for job_id {job_record.id}.")
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        db.rollback()
+        logging.error(f"Error processing batch results for job_id {job_record.id}: {e}", exc_info=True)
+        
+        try:
+            with get_session() as error_db:
+                job_to_update_on_error = crud_batch_jobs.get_pipeline_batch_job(error_db, run_id, batch_type)
+                if job_to_update_on_error and job_to_update_on_error.status == crud_batch_jobs.STATUS_PROCESSING:
+                    crud_batch_jobs.update_pipeline_batch_job(
+                        error_db,
+                        job_id=job_to_update_on_error.id,
+                        status=crud_batch_jobs.STATUS_PROCESSING_FAILED,
+                        last_error=str(e)[:1023]
+                    )
+                    error_db.commit()
+        except Exception as db_err:
+            logging.error(
+                f"Additionally failed to update job status to PROCESSING_FAILED for job_id {job_record.id if job_record else 'unknown'}: {db_err}",
+                exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error processing batch results: {e}")
 
 @app.post("/pipeline/{run_id}/finalize-outputs", tags=["pipeline"])
 def finalize_outputs(run_id: str):
     """Endpoint para executar task_finalize_outputs em contexto de run_id."""
     try:
         pt.task_finalize_outputs(run_id)
-        # Update pipeline run status to 'success'
+
         with get_session() as db:
             crud_runs.update_run_status(db, run_id, status='success')
         return {"status": "success", "run_id": run_id, "message": "Final outputs saved"}
@@ -169,11 +441,6 @@ async def upload_resource(
             db.rollback()
             logging.error(f"Erro de banco de dados ao criar recurso: {e_db}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Erro de banco de dados ao criar recurso: {e_db}")
-
-
-
-
-
 
 @app.get("/api/v1/resources/{resource_id}", response_model=schemas.ResourceResponse, tags=["resources"])
 def get_resource_details(

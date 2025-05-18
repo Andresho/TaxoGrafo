@@ -9,14 +9,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Parquet data
-*.parquet
-
 # Generated pipeline outputs
 files/
 graphrag_outputs/
 pipeline_workdir/
-output/
 
 /data/*
 !/data/input/

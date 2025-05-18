@@ -19,13 +19,14 @@ from pathlib import Path
 import shutil
 import requests
 import pypdfium2 as pdfium
-
 import ast
 
 AIRFLOW_DATA_DIR_VOL = Path(os.getenv("AIRFLOW_DATA_DIR", "/opt/airflow/data"))
 PIPELINE_API_CONN_ID = "pipeline_api"
 PIPELINE_API_BASE_URL = os.getenv("AIRFLOW_CONN_PIPELINE_API", "http://pipeline-api:8000")
 
+BATCH_TYPE_UC_GENERATION = "uc_generation"
+BATCH_TYPE_DIFFICULTY_ASSESSMENT = "difficulty_assessment"
 
 def _prepare_input_files_callable(run_id: str, resource_ids_for_run_input: str, **kwargs):
     logging.info(f"Iniciando _prepare_input_files_callable para run_id={run_id}")
@@ -66,7 +67,6 @@ def _prepare_input_files_callable(run_id: str, resource_ids_for_run_input: str, 
             logging.warning(f"Item inválido na lista de resource_ids: '{resource_id_str}'. Pulando.")
             continue
         try:
-            # 1. Obter detalhes do recurso da API
             res_details_url = f"{PIPELINE_API_BASE_URL}/api/v1/resources/{resource_id_str}"
             response = requests.get(res_details_url, timeout=10)
             response.raise_for_status()
@@ -74,12 +74,10 @@ def _prepare_input_files_callable(run_id: str, resource_ids_for_run_input: str, 
             logging.info(f"Detalhes do recurso {resource_id_str}: {resource_data}")
 
             original_file_path_relative = Path(resource_data["original_file_path"])
-            # Monta caminho absoluto DENTRO do worker Airflow, usando o volume montado
             original_file_path_absolute = AIRFLOW_DATA_DIR_VOL / original_file_path_relative
 
             processed_txt_path_relative_str = resource_data.get("processed_txt_path")
             current_status = resource_data.get("status")
-
             final_txt_to_copy_to_run_input = None
 
             if processed_txt_path_relative_str and current_status == "processed_txt_success":
@@ -88,24 +86,27 @@ def _prepare_input_files_callable(run_id: str, resource_ids_for_run_input: str, 
             else:
                 logging.info(f"Recurso {resource_id_str} precisa ser convertido para TXT.")
                 update_payload = {"status": "processing_txt"}
-                requests.put(f"{PIPELINE_API_BASE_URL}/api/v1/resources/{resource_id_str}", json=update_payload, timeout=5).raise_for_status()
+                requests.put(f"{PIPELINE_API_BASE_URL}/api/v1/resources/{resource_id_str}", json=update_payload,
+                             timeout=5).raise_for_status()
 
-                # Caminho para o TXT processado (relativo e absoluto)
-                # Salva como <uuid_recurso>.txt para evitar conflitos e facilitar lookup
                 processed_txt_filename = f"{resource_id_str}.txt"
-                target_processed_txt_path_relative = Path("uploads") / "processed_txt" / resource_id_str / processed_txt_filename
+                target_processed_txt_path_relative = Path(
+                    "uploads") / "processed_txt" / resource_id_str / processed_txt_filename
                 target_processed_txt_path_absolute = base_processed_txt_dir / resource_id_str / processed_txt_filename
                 (base_processed_txt_dir / resource_id_str).mkdir(parents=True, exist_ok=True)
-
 
                 if not original_file_path_absolute.exists():
                     raise FileNotFoundError(f"Arquivo original não encontrado em: {original_file_path_absolute}")
 
-                if resource_data["original_mime_type"] == "text/plain" or original_file_path_absolute.suffix.lower() == ".txt":
-                    logging.info(f"Copiando arquivo TXT original: {original_file_path_absolute} para {target_processed_txt_path_absolute}")
+                if resource_data[
+                    "original_mime_type"] == "text/plain" or original_file_path_absolute.suffix.lower() == ".txt":
+                    logging.info(
+                        f"Copiando arquivo TXT original: {original_file_path_absolute} para {target_processed_txt_path_absolute}")
                     shutil.copy(original_file_path_absolute, target_processed_txt_path_absolute)
-                elif resource_data["original_mime_type"] == "application/pdf" or original_file_path_absolute.suffix.lower() == ".pdf":
-                    logging.info(f"Convertendo PDF: {original_file_path_absolute} para {target_processed_txt_path_absolute}")
+                elif resource_data[
+                    "original_mime_type"] == "application/pdf" or original_file_path_absolute.suffix.lower() == ".pdf":
+                    logging.info(
+                        f"Convertendo PDF: {original_file_path_absolute} para {target_processed_txt_path_absolute}")
                     pdf_doc = pdfium.PdfDocument(original_file_path_absolute)
                     text_content = ""
                     for i in range(len(pdf_doc)):
@@ -118,26 +119,27 @@ def _prepare_input_files_callable(run_id: str, resource_ids_for_run_input: str, 
                     with open(target_processed_txt_path_absolute, "w", encoding="utf-8") as f_out:
                         f_out.write(text_content)
                 else:
-                    raise ValueError(f"Tipo de arquivo não suportado para conversão: {resource_data['original_mime_type']}")
+                    raise ValueError(
+                        f"Tipo de arquivo não suportado para conversão: {resource_data['original_mime_type']}")
 
-                # Atualizar status para 'processed_txt_success' via API
                 update_payload_success = {
                     "status": "processed_txt_success",
                     "processed_txt_path": str(target_processed_txt_path_relative)
                 }
-                requests.put(f"{PIPELINE_API_BASE_URL}/api/v1/resources/{resource_id_str}", json=update_payload_success, timeout=5).raise_for_status()
+                requests.put(f"{PIPELINE_API_BASE_URL}/api/v1/resources/{resource_id_str}", json=update_payload_success,
+                             timeout=5).raise_for_status()
                 logging.info(f"Recurso {resource_id_str} convertido e status atualizado.")
                 final_txt_to_copy_to_run_input = target_processed_txt_path_absolute
 
-            # Copiar o TXT (original ou processado) para a pasta de input da run
             if final_txt_to_copy_to_run_input and final_txt_to_copy_to_run_input.exists():
-                # Usar o nome original do arquivo (sanitizado) + .txt para a pasta de input da run
-                sanitized_original_filename = "".join(c if c.isalnum() or c in ('.', '_') else '_' for c in Path(resource_data["original_filename"]).stem)
+                sanitized_original_filename = "".join(
+                    c if c.isalnum() or c in ('.', '_') else '_' for c in Path(resource_data["original_filename"]).stem)
                 destination_in_run_input = run_specific_input_dir / f"{sanitized_original_filename}.txt"
                 shutil.copy(final_txt_to_copy_to_run_input, destination_in_run_input)
                 logging.info(f"Copiado {final_txt_to_copy_to_run_input} para {destination_in_run_input}")
             else:
-                raise FileNotFoundError(f"Arquivo TXT final não encontrado para cópia: {final_txt_to_copy_to_run_input}")
+                raise FileNotFoundError(
+                    f"Arquivo TXT final não encontrado para cópia: {final_txt_to_copy_to_run_input}")
 
         except Exception as e:
             logging.error(f"Erro ao processar resource_id {resource_id_str}: {e}", exc_info=True)
@@ -147,26 +149,27 @@ def _prepare_input_files_callable(run_id: str, resource_ids_for_run_input: str, 
                              timeout=5)
             except Exception as api_err:
                 logging.error(f"Falha ao atualizar status de erro para {resource_id_str} via API: {api_err}")
-            raise
 
 def _skip_or_run_graphrag(**kwargs):
-    """Retorna a tarefa a executar: 'skip_graphrag' ou 'graphrag_index'."""
     dag_run = kwargs.get('dag_run')
     if dag_run and dag_run.conf.get('skip_graphrag', False):
         return "skip_graphrag"
     return "graphrag_index"
 
+
 with DAG(
-    dag_id="knowledge_graph_pipeline",
-    schedule=None,
-    start_date=pendulum.datetime(2024, 5, 24, tz="UTC"),
-    catchup=False,
-    tags=["knowledge_graph", "llm", "batch_api"],
-    params={'identifier': "{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}"},
-    doc_md="""
-    ### Knowledge Graph Pipeline DAG
+        dag_id="knowledge_graph_pipeline",
+        schedule=None,
+        start_date=pendulum.datetime(2024, 5, 24, tz="UTC"),
+        catchup=False,
+        tags=["knowledge_graph", "llm", "batch_api_v2"],
+        params={'identifier': "{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}"},
+        doc_md="""
+    ### Knowledge Graph Pipeline DAG (v2 - Database Managed Batches)
     Orquestra a geração de um grafo de conhecimento educacional a partir de outputs do GraphRAG,
     utilizando a OpenAI Batch API para geração de UCs e avaliação de dificuldade.
+    O estado dos jobs de batch (submissão, status LLM, processamento de resultados) é gerenciado
+    pela API e persistido no banco de dados.
     """,
 ) as dag:
     prepare_input_files = PythonOperator(
@@ -207,109 +210,108 @@ with DAG(
 
     prepare_origins = SimpleHttpOperator(
         task_id="prepare_origins",
-        http_conn_id="pipeline_api",
+        http_conn_id=PIPELINE_API_CONN_ID,
         method="POST",
         endpoint="/pipeline/{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}/prepare-origins",
         headers={"Content-Type": "application/json"},
         do_xcom_push=False,
-        # allow this task to run if at least one upstream succeeded (branch or graphrag)
         trigger_rule=TriggerRule.ONE_SUCCESS,
     )
 
-    # 3: Submete batch de geração UC e armazena batch_id em XCom
-    submit_generation = SimpleHttpOperator(
+    submit_generation_batch = SimpleHttpOperator(
         task_id="submit_generation_batch",
-        http_conn_id="pipeline_api",
+        http_conn_id=PIPELINE_API_CONN_ID,
         method="POST",
-        endpoint="/pipeline/{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}/submit-uc-generation-batch",
+        endpoint=f"/pipeline/{{{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}}}/submit-batch/{BATCH_TYPE_UC_GENERATION}",
         headers={"Content-Type": "application/json"},
-        response_filter=lambda response: response.json().get("batch_id"),
-        do_xcom_push=True,
+        do_xcom_push=False,
     )
 
-    # 4: Aguarda término da batch de geração UC
-    wait_generation = HttpSensor(
-        task_id="wait_generation_batch",
-        http_conn_id="pipeline_api",
+    wait_generation_batch_completion = HttpSensor(
+        task_id="wait_generation_batch_completion",
+        http_conn_id=PIPELINE_API_CONN_ID,
         method="GET",
-        # usa run_id e batch_id
-        endpoint="/pipeline/{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}/batch-status/{{ ti.xcom_pull(task_ids='submit_generation_batch') }}",
+        endpoint=f"/pipeline/{{{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}}}/batch-job-status/{BATCH_TYPE_UC_GENERATION}",
         request_params={},
-        response_check=lambda response: response.json().get("status") == "completed",
+        response_check=lambda response: response.json().get("llm_status") == "completed",
         poke_interval=60,
         timeout=3600,
         mode="reschedule",
     )
 
-    # 5: Processa resultados da geração UC
-    process_generation = SimpleHttpOperator(
-        task_id="process_generation_batch",
-        http_conn_id="pipeline_api",
+    process_generation_batch_results = SimpleHttpOperator(
+        task_id="process_generation_batch_results",
+        http_conn_id=PIPELINE_API_CONN_ID,
         method="POST",
-        endpoint="/pipeline/{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}/process-uc-generation-batch/{{ ti.xcom_pull(task_ids='submit_generation_batch') }}",
+        endpoint=f"/pipeline/{{{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}}}/process-batch-results/{BATCH_TYPE_UC_GENERATION}",
         headers={"Content-Type": "application/json"},
         do_xcom_push=False,
     )
 
-    # 6: Define relacionamentos via API
-    define_rels = SimpleHttpOperator(
+    define_relationships = SimpleHttpOperator(
         task_id="define_relationships",
-        http_conn_id="pipeline_api",
+        http_conn_id=PIPELINE_API_CONN_ID,
         method="POST",
         endpoint="/pipeline/{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}/define-relationships",
         headers={"Content-Type": "application/json"},
         do_xcom_push=False,
     )
 
-    # 7: Submete batch de avaliação de dificuldade e armazena batch_id em XCom
-    submit_difficulty = SimpleHttpOperator(
+    submit_difficulty_batch = SimpleHttpOperator(
         task_id="submit_difficulty_batch",
-        http_conn_id="pipeline_api",
+        http_conn_id=PIPELINE_API_CONN_ID,
         method="POST",
-        endpoint="/pipeline/{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}/submit-difficulty-batch",
+        endpoint=f"/pipeline/{{{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}}}/submit-batch/{BATCH_TYPE_DIFFICULTY_ASSESSMENT}",
         headers={"Content-Type": "application/json"},
-        response_filter=lambda response: response.json().get("batch_id"),
-        do_xcom_push=True,
+        do_xcom_push=False,
     )
 
-    # 8: Aguarda término da batch de avaliação de dificuldade
-    wait_difficulty = HttpSensor(
-        task_id="wait_difficulty_batch",
-        http_conn_id="pipeline_api",
+    wait_difficulty_batch_completion = HttpSensor(
+        task_id="wait_difficulty_batch_completion",
+        http_conn_id=PIPELINE_API_CONN_ID,
         method="GET",
-        endpoint="/pipeline/{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}/batch-status/{{ ti.xcom_pull(task_ids='submit_difficulty_batch') }}",
+        endpoint=f"/pipeline/{{{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}}}/batch-job-status/{BATCH_TYPE_DIFFICULTY_ASSESSMENT}",
         request_params={},
-        response_check=lambda response: response.json().get("status") == "completed",
+        response_check=lambda response: response.json().get("llm_status") == "completed",
         poke_interval=60,
         timeout=3600,
         mode="reschedule",
     )
 
-    # 9: Processa resultados de dificuldade
-    process_difficulty = SimpleHttpOperator(
-        task_id="process_difficulty_batch",
-        http_conn_id="pipeline_api",
+    process_difficulty_batch_results = SimpleHttpOperator(
+        task_id="process_difficulty_batch_results",
+        http_conn_id=PIPELINE_API_CONN_ID,
         method="POST",
-        endpoint="/pipeline/{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}/process-difficulty-batch/{{ ti.xcom_pull(task_ids='submit_difficulty_batch') }}",
+        endpoint=f"/pipeline/{{{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}}}/process-batch-results/{BATCH_TYPE_DIFFICULTY_ASSESSMENT}",
         headers={"Content-Type": "application/json"},
         do_xcom_push=False,
     )
 
-    # 10: Finaliza outputs via API
-    finalize = SimpleHttpOperator(
+    finalize_outputs = SimpleHttpOperator(
         task_id="finalize_outputs",
-        http_conn_id="pipeline_api",
+        http_conn_id=PIPELINE_API_CONN_ID,
         method="POST",
         endpoint="/pipeline/{{ dag_run.conf.get('pipeline_id', dag_run.run_id) }}/finalize-outputs",
         headers={"Content-Type": "application/json"},
         do_xcom_push=False,
     )
 
-    # Definindo as dependências com idempotência do Graphrag
+    # Definindo as dependências do pipeline
+    prepare_input_files >> branch_graphrag
     branch_graphrag >> [graphrag_index, skip_graphrag]
+
+    # prepare_origins depende da conclusão de graphrag_index ou skip_graphrag
     graphrag_index >> prepare_origins
     skip_graphrag >> prepare_origins
-    prepare_origins >> submit_generation >> wait_generation >> process_generation
-    process_generation >> define_rels
-    define_rels >> submit_difficulty >> wait_difficulty >> process_difficulty
-    process_difficulty >> finalize
+
+    prepare_origins >> submit_generation_batch
+    submit_generation_batch >> wait_generation_batch_completion
+    wait_generation_batch_completion >> process_generation_batch_results
+
+    process_generation_batch_results >> define_relationships
+
+    define_relationships >> submit_difficulty_batch
+    submit_difficulty_batch >> wait_difficulty_batch_completion
+    wait_difficulty_batch_completion >> process_difficulty_batch_results
+
+    process_difficulty_batch_results >> finalize_outputs

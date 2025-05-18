@@ -1,4 +1,4 @@
-from sqlalchemy import Table, Column, String, TIMESTAMP, JSON, Integer, Float, Text, ForeignKey, Boolean, ForeignKeyConstraint
+from sqlalchemy import Table, Column, String, TIMESTAMP, JSON, Integer, Float, Text, ForeignKey, Boolean, ForeignKeyConstraint, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 import uuid
@@ -240,3 +240,26 @@ class PipelineRunResource(Base):
 
     run_id = Column(String, ForeignKey('pipeline_runs.run_id', ondelete='CASCADE'), primary_key=True)
     resource_id = Column(PG_UUID(as_uuid=True), ForeignKey('resources.resource_id', ondelete='CASCADE'), primary_key=True)
+
+class PipelineBatchJob(Base):
+    __tablename__ = "pipeline_batch_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pipeline_run_id = Column(String, ForeignKey('pipeline_runs.run_id', ondelete='CASCADE'), nullable=False, index=True)
+    batch_type = Column(String(50), nullable=False)
+    llm_batch_id = Column(String(255), nullable=True)
+    status = Column(String(50), nullable=False, index=True)
+    # PENDING_SUBMISSION, SUBMITTED, SUBMISSION_FAILED,
+    # PENDING_PROCESSING, COMPLETED, PROCESSING_FAILED
+    last_error = Column(Text, nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    pipeline_run = relationship("PipelineRun")
+
+    __table_args__ = (
+        UniqueConstraint('pipeline_run_id', 'batch_type', name='uq_pipeline_run_batch_type'),
+    )
+
+    def __repr__(self):
+        return f"<PipelineBatchJob(id={self.id}, run_id='{self.pipeline_run_id}', type='{self.batch_type}', status='{self.status}')>"

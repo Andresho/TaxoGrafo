@@ -1,5 +1,3 @@
-# scripts/pipeline_tasks.py
-
 import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple
@@ -11,11 +9,29 @@ import time
 import datetime
 import json
 import numpy as np
-
 import uuid
-import models
+
+from sqlalchemy.orm import Session 
+from db import get_session
+import models 
+
+import crud.knowledge_unit_origins as crud_knowledge_unit_origins
+import crud.generated_ucs_raw as crud_generated_ucs_raw
+import crud.knowledge_unit_evaluations_batch as crud_knowledge_unit_evaluations_batch
+import crud.knowledge_relationships_intermediate as crud_rel_intermediate
+import crud.final_knowledge_units as crud_final_ucs
+import crud.final_knowledge_relationships as crud_final_rels
+import crud.pipeline_run as crud_runs
+import crud.graphrag_communities as crud_graphrag_communities
+import crud.graphrag_community_reports as crud_graphrag_community_reports
+import crud.graphrag_documents as crud_graphrag_documents
+import crud.graphrag_entities as crud_graphrag_entities
+import crud.graphrag_relationships as crud_graphrag_relationships
+import crud.graphrag_text_units as crud_graphrag_text_units
+
 from scripts.llm_client import get_llm_strategy
-from scripts.io_utils import save_dataframe, load_dataframe
+from scripts.io_utils import save_dataframe, \
+    load_dataframe
 from scripts.data_lake import DataLake
 from scripts.origins_utils import (
     prepare_uc_origins,
@@ -25,9 +41,9 @@ from scripts.origins_utils import (
     HubNeighborSelector,
 )
 from scripts.difficulty_utils import _format_difficulty_prompt, _calculate_final_difficulty_from_raw
-from scripts.batch_utils import check_batch_status, process_batch_results
+from scripts.batch_utils import check_batch_status, \
+    process_batch_results
 from scripts.rel_utils import _add_relationships_avoiding_duplicates, _create_expands_links, _prepare_expands_lookups
-from scripts.difficulty_utils import _format_difficulty_prompt, _calculate_final_difficulty_from_raw
 from scripts.rel_builders import RequiresBuilder, ExpandsBuilder
 from scripts.difficulty_scheduler import OriginDifficultyScheduler
 from scripts.constants import (
@@ -42,16 +58,6 @@ from scripts.constants import (
     DIFFICULTY_BATCH_SIZE,
     MIN_EVALUATIONS_PER_UC,
     BATCH_FILES_DIR,
-    AIRFLOW_DATA_DIR,
-    BASE_INPUT_DIR,
-    PIPELINE_WORK_DIR,
-    BATCH_FILES_DIR,
-    stage1_dir,
-    stage2_output_ucs_dir,
-    stage3_dir,
-    stage4_input_batch_dir,
-    stage4_output_eval_dir,
-    stage5_dir,
     GENERATED_UCS_RAW,
     UC_EVALUATIONS_RAW,
     REL_TYPE_REQUIRES,
@@ -59,58 +65,31 @@ from scripts.constants import (
     REL_INTERMEDIATE,
     FINAL_UC_FILE,
     FINAL_REL_FILE,
+    AIRFLOW_DATA_DIR,
+    BASE_INPUT_DIR,
 )
 
-# Ingest Graphrag output Parquet files into the database
-# Use a DB session and CRUD modules for each output table
-from db import get_session
-import crud.graphrag_communities as crud_graphrag_communities
-import crud.graphrag_community_reports as crud_graphrag_community_reports
-import crud.graphrag_documents as crud_graphrag_documents
-import crud.graphrag_entities as crud_graphrag_entities
-import crud.graphrag_relationships as crud_graphrag_relationships
-import crud.graphrag_text_units as crud_graphrag_text_units
-import crud.knowledge_unit_origins as crud_knowledge_unit_origins
-import crud.knowledge_relationships_intermediate as crud_rel_intermediate
-import crud.final_knowledge_units as crud_final_ucs
-import crud.final_knowledge_relationships as crud_final_rels
-import crud.generated_ucs_raw as crud_generated_ucs_raw
-import crud.knowledge_unit_evaluations_batch as crud_knowledge_unit_evaluations_batch
-import crud.pipeline_run as crud_runs
-
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Helpers de Diretórios por run_id ---
 def _get_dirs(run_id: str):
-    """Retorna tupla de paths: base_input, stage1..5 e batch_dir conforme run_id ou valores padrão."""
-    # Base de dados (concatena run_id se fornecido)
+    """Retorna tupla de paths: base_input, work_dir e batch_dir conforme run_id."""
     root = Path(AIRFLOW_DATA_DIR) / run_id
-    base_input = root / 'output'
-    work_dir = root / 'pipeline_workdir'
-    batch_dir = work_dir / 'batch_files'
-    s1 = work_dir / '1_origins'
-    s2 = work_dir / '2_generated_ucs'
-    s3 = work_dir / '3_relationships'
-    s4 = work_dir / '4_difficulty_evals'
-    s5 = work_dir / '5_final_outputs'
+    base_input_for_graphrag = root / 'output'
+    work_dir_for_batches = root / 'pipeline_workdir'
+    batch_files_dir = work_dir_for_batches / 'batch_files'
 
-    return base_input, s1, s2, s3, s4, s5, batch_dir
+    s1 = work_dir_for_batches / '1_origins'
+    s2 = work_dir_for_batches / '2_generated_ucs'
+    s3 = work_dir_for_batches / '3_relationships'
+    s4 = work_dir_for_batches / '4_difficulty_evals'
+    s5 = work_dir_for_batches / '5_final_outputs'
 
-DEFAULT_OUTPUT_COLUMNS = {
-    GENERATED_UCS_RAW: ["uc_id", "origin_id", "bloom_level", "uc_text"],
-    UC_EVALUATIONS_RAW: ["uc_id", "difficulty_score", "justification"]
-}
+    return base_input_for_graphrag, work_dir_for_batches, batch_files_dir, s1, s2, s3, s4, s5
 
 def _build_community_maps(
         actual_communities_df: pd.DataFrame
 ) -> Tuple[Dict[str, str], List[Dict[str, Any]], Dict[str, str]]:
-    """
-    Processa o DataFrame da ESTRUTURA das comunidades (ex: communities.parquet) para:
-    1. Criar um mapa de human_readable_id (string) para UUID (string) da comunidade.
-    2. Enriquecer os registros de ESTRUTURA da comunidade com 'parent_community_id' (UUID do pai).
-    3. Criar um mapa de entity_id (string) para o UUID (string) da comunidade folha à qual pertence.
-    """
     human_readable_to_uuid_map: Dict[str, str] = {}
     if 'human_readable_id' in actual_communities_df.columns and 'id' in actual_communities_df.columns:
         for hr_id_val, community_uuid_val in zip(actual_communities_df['human_readable_id'],
@@ -141,7 +120,6 @@ def _build_community_maps(
             if col_name_from_df in expected_db_cols_for_graphrag_community:
                 community_db_rec[col_name_from_df] = getattr(community_row_tuple, col_name_from_df)
 
-        # Validações e defaults para colunas essenciais no DB record
         if not pd.notna(community_db_rec.get('id')):
             logging.error(f"Registro de comunidade em communities.parquet sem 'id' (UUID). Pulando.")
             continue
@@ -149,18 +127,14 @@ def _build_community_maps(
         community_uuid_str = str(community_db_rec.get('id'))
         community_title_val = community_db_rec.get('title', f'Comunidade Sem Título {community_uuid_str}')
 
-        # Garantir que todas as colunas esperadas para a tabela estejam no dict, mesmo que com None
         for db_col in expected_db_cols_for_graphrag_community:
             if db_col not in community_db_rec:
-                # Valores padrão para colunas JSON/list
                 if db_col in ['children', 'entity_ids', 'relationship_ids', 'text_unit_ids']:
-                    community_db_rec[db_col] = []  # ou None
+                    community_db_rec[db_col] = []
                 else:
                     community_db_rec[db_col] = None
 
-        # Resolver parent_community_id (UUID do pai)
-        parent_hr_id_val = community_db_rec.get(
-            'parent')  # 'parent' é o human_readable_id do pai no communities.parquet
+        parent_hr_id_val = community_db_rec.get('parent')
         parent_hr_id_str = None
         if pd.notna(parent_hr_id_val):
             parent_hr_id_str = str(int(parent_hr_id_val)) if pd.api.types.is_number(parent_hr_id_val) else str(
@@ -174,7 +148,6 @@ def _build_community_maps(
                 logging.warning(f"Comunidade (estrutura) '{community_title_val}' (UUID: {community_uuid_str}) "
                                 f"tem parent_hr_id '{parent_hr_id_str}' não mapeado para UUID.")
 
-        # Popular entity_to_community_map
         entity_ids_data = community_db_rec.get('entity_ids')
         parsed_entity_ids_list = []
         if entity_ids_data is not None:
@@ -207,13 +180,11 @@ def _build_community_maps(
 
     return human_readable_to_uuid_map, processed_community_structure_records, entity_to_community_map
 
+
 def _enrich_entities_with_community_id(
         entities_df: pd.DataFrame,
         entity_to_community_map: Dict[str, str]
 ) -> List[Dict[str, Any]]:
-    """
-    Adiciona 'parent_community_id' (UUID da comunidade folha) a cada registro de entidade.
-    """
     processed_entity_records = []
     if entities_df is None or entities_df.empty:
         logging.warning("DataFrame de entidades vazio ou nulo em _enrich_entities_with_community_id.")
@@ -235,361 +206,392 @@ def _enrich_entities_with_community_id(
     return processed_entity_records
 
 
-def task_prepare_origins(run_id: str, **context):
+def task_prepare_origins(run_id: str):
     """
-    Tarefa 1: Prepara origens de UC e ingere outputs do GraphRAG (enriquecidos) no banco.
-    Garante atomicidade e valida inputs/outputs do GraphRAG.
+    Task 1: Prepara origens de UC e ingere outputs do GraphRAG (enriquecidos) no banco.
+    Esta função agora assume que será chamada pela API e fará suas operações de DB
+    em uma sessão fornecida ou criada por ela, e comitará no final se bem-sucedida.
+    A idempotência de alto nível (já executou para esta run?) é tratada pela API.
     """
-    logging.info(f"--- TASK: prepare_origins (run_id={run_id}) ---")
-    task_successful = False
-    final_log_message = "FALHOU"
+    logging.info(f"--- LOGIC: prepare_origins (run_id={run_id}) ---")
 
     with get_session() as db:
         try:
-            base_input, _, _, _, _, _, _ = _get_dirs(run_id)
-            graphrag_output_dir = base_input
-
-            existing_origins_in_db = crud_knowledge_unit_origins.get_knowledge_unit_origins(db, run_id)
             existing_graphrag_entities_in_db = crud_graphrag_entities.get_entities(db, run_id)
-
-            if existing_origins_in_db and existing_graphrag_entities_in_db:
+            if existing_graphrag_entities_in_db:
                 logging.info(
-                    f"Dados de GraphRAG (entidades) e Origens de UC já existem no banco para run_id={run_id}. Pulando.")
-                task_successful = True
-                final_log_message = "CONCLUÍDA (Idempotente - dados já no banco)"
-            else:
-                logging.info("Carregando arquivos Parquet do GraphRAG...")
-                actual_communities_df = load_dataframe(graphrag_output_dir, "communities")
-                reports_df = load_dataframe(graphrag_output_dir, "community_reports")
-                entities_df = load_dataframe(graphrag_output_dir, "entities")
-                documents_df = load_dataframe(graphrag_output_dir, "documents")
-                relationships_df = load_dataframe(graphrag_output_dir, "relationships")
-                text_units_df = load_dataframe(graphrag_output_dir, "text_units")
+                    f"Dados do GraphRAG já parecem ingeridos para run_id={run_id} (verificado por entidades). Pulando ingestão de Parquets.")
 
-                if entities_df is None or entities_df.empty:
-                    raise ValueError(f"Erro crítico: entities.parquet não encontrado ou vazio.")
-                if actual_communities_df is None or actual_communities_df.empty:
-                    raise ValueError(f"Erro crítico: 'communities.parquet' (estrutura) não encontrado ou vazio.")
-                if reports_df is None or reports_df.empty:
-                    logging.warning(
-                        f"'community_reports.parquet' não encontrado ou vazio. Origens de 'community_report' podem não ser geradas.")
-
-                logging.info("Processando dados de ESTRUTURA de comunidades...")
-                hr_id_to_uuid_map, processed_community_structure_records, entity_to_community_map = _build_community_maps(
-                    actual_communities_df)
-
-                logging.info("Enriquecendo dados de entidades com IDs de comunidade pai (folha)...")
-                processed_entity_records = _enrich_entities_with_community_id(entities_df, entity_to_community_map)
-
-                logging.info("Ingerindo dados processados do GraphRAG no banco de dados (pendente)...")
-                if processed_community_structure_records:
-                    crud_graphrag_communities.add_communities(db, run_id, processed_community_structure_records)
-                if reports_df is not None and not reports_df.empty:
-                    crud_graphrag_community_reports.add_community_reports(db, run_id, reports_df.to_dict('records'))
-                if processed_entity_records:
-                    crud_graphrag_entities.add_entities(db, run_id, processed_entity_records)
-
-                if documents_df is not None and not documents_df.empty:
-                    crud_graphrag_documents.add_documents(db, run_id, documents_df.to_dict('records'))
-                if relationships_df is not None and not relationships_df.empty:
-                    crud_graphrag_relationships.add_relationships(db, run_id, relationships_df.to_dict('records'))
-                if text_units_df is not None and not text_units_df.empty:
-                    crud_graphrag_text_units.add_text_units(db, run_id, text_units_df.to_dict('records'))
-                logging.info("Dados do GraphRAG adicionados à sessão do banco.")
-
-                # --- Preparar Knowledge Unit Origins ---
-                origins_to_save = []
-                if (processed_entity_records or (reports_df is not None and not reports_df.empty)):
-                    logging.info("Preparando Knowledge Unit Origins...")
-                    origins_to_save = prepare_uc_origins(
-                        processed_entity_records if processed_entity_records else [],
-                        reports_df.to_dict('records') if (reports_df is not None and not reports_df.empty) else [],
-                        processed_community_structure_records if processed_community_structure_records else [],
-                        hr_id_to_uuid_map
-                    )
+                existing_ku_origins = crud_knowledge_unit_origins.get_knowledge_unit_origins(db, run_id)
+                if existing_ku_origins:
+                    logging.info(f"Knowledge Unit Origins também já existem para run_id={run_id}. Nada a fazer.")
+                    return
                 else:
-                    logging.warning("Nenhuma entidade ou relatório de comunidade para criar origens de UC.")
+                    logging.info(
+                        f"Dados GraphRAG ingeridos, mas Knowledge Unit Origins não. Tentando criá-las a partir dos dados do DB.")
+                    pass
 
+            base_input_for_graphrag, _, _, _, _, _, _, _ = _get_dirs(run_id)
+            graphrag_output_dir = base_input_for_graphrag
+
+            logging.info(f"Carregando arquivos Parquet do GraphRAG de {graphrag_output_dir}...")
+            
+            actual_communities_df = load_dataframe(graphrag_output_dir, "communities")
+            reports_df = load_dataframe(graphrag_output_dir, "community_reports")
+            entities_df_from_parquet = load_dataframe(graphrag_output_dir, "entities")
+            documents_df = load_dataframe(graphrag_output_dir, "documents")
+            relationships_df = load_dataframe(graphrag_output_dir, "relationships")
+            text_units_df = load_dataframe(graphrag_output_dir, "text_units")
+
+            if entities_df_from_parquet is None or entities_df_from_parquet.empty:
+                raise ValueError(f"Erro crítico: entities.parquet não encontrado ou vazio em {graphrag_output_dir}.")
+            if actual_communities_df is None or actual_communities_df.empty:
+                raise ValueError(
+                    f"Erro crítico: 'communities.parquet' (estrutura) não encontrado ou vazio em {graphrag_output_dir}.")
+
+            logging.info("Processando dados de ESTRUTURA de comunidades...")
+            hr_id_to_uuid_map, processed_community_structure_records, entity_to_community_map = _build_community_maps(
+                actual_communities_df
+            )
+
+            logging.info("Enriquecendo dados de entidades com IDs de comunidade pai (folha)...")
+            processed_entity_records = _enrich_entities_with_community_id(entities_df_from_parquet,
+                                                                          entity_to_community_map)
+
+            logging.info("Ingerindo dados processados do GraphRAG no banco de dados...")
+            if processed_community_structure_records:
+                crud_graphrag_communities.add_communities(db, run_id, processed_community_structure_records)
+            if reports_df is not None and not reports_df.empty:
+                crud_graphrag_community_reports.add_community_reports(db, run_id, reports_df.to_dict('records'))
+            if processed_entity_records:
+                crud_graphrag_entities.add_entities(db, run_id, processed_entity_records)
+
+            if documents_df is not None and not documents_df.empty:
+                crud_graphrag_documents.add_documents(db, run_id, documents_df.to_dict('records'))
+            if relationships_df is not None and not relationships_df.empty:
+                crud_graphrag_relationships.add_relationships(db, run_id, relationships_df.to_dict('records'))
+            if text_units_df is not None and not text_units_df.empty:
+                crud_graphrag_text_units.add_text_units(db, run_id, text_units_df.to_dict('records'))
+
+            logging.info("Dados do GraphRAG adicionados à sessão do banco (pendente de commit).")
+
+            origins_to_save = []
+            if not crud_knowledge_unit_origins.get_knowledge_unit_origins(db, run_id):
+                logging.info("Preparando Knowledge Unit Origins...")
+                origins_to_save = prepare_uc_origins(
+                    processed_entity_records if processed_entity_records else [],
+                    reports_df.to_dict('records') if (reports_df is not None and not reports_df.empty) else [],
+                    processed_community_structure_records if processed_community_structure_records else [],
+                    hr_id_to_uuid_map
+                )
                 if origins_to_save:
-                    logging.info(f"Adicionando {len(origins_to_save)} origens de UC ao banco de dados (pendente)...")
+                    logging.info(
+                        f"Adicionando {len(origins_to_save)} Knowledge Unit Origins ao banco (pendente de commit)...")
                     crud_knowledge_unit_origins.add_knowledge_unit_origins(db, run_id, origins_to_save)
                 else:
                     logging.warning("Nenhuma Knowledge Unit Origin foi preparada para salvar.")
+            else:
+                logging.info(f"Knowledge Unit Origins já existem para run_id={run_id}. Pulando criação.")
 
-                logging.info("Commitando todas as alterações da task...")
-                db.commit()
-                task_successful = True
-                final_log_message = "CONCLUÍDA com sucesso"
+            logging.info("Commitando todas as alterações da task task_prepare_origins...")
+            db.commit()
+            logging.info(f"--- LOGIC: prepare_origins CONCLUÍDA com sucesso (run_id={run_id}) ---")
 
         except ValueError as ve:
             logging.error(f"Erro de valor durante task_prepare_origins: {ve}", exc_info=True)
-            db.rollback();
-            final_log_message = "FALHOU (Erro de Valor)";
+            db.rollback()
+            logging.error(f"--- LOGIC: prepare_origins FALHOU (Erro de Valor) (run_id={run_id}) ---")
             raise
         except Exception as e:
             logging.error(f"Erro geral durante task_prepare_origins: {e}", exc_info=True)
-            db.rollback();
-            final_log_message = "FALHOU (Erro Geral)";
+            db.rollback()
+            logging.error(f"--- LOGIC: prepare_origins FALHOU (Erro Geral) (run_id={run_id}) ---")
             raise
 
-    log_level = logging.INFO if task_successful else logging.ERROR
-    logging.log(log_level, f"--- TASK prepare_origins {final_log_message} (run_id={run_id}) ---")
 
-def task_submit_uc_generation_batch(run_id: str, **context):
-    """Tarefa 2: Prepara JSONL e submete batch de geração UC para um run_id."""
-    logging.info(f"--- TASK: submit_uc_generation_batch (run_id={run_id}) ---")
-    # Idempotência: se já houver UCs geradas, pular
-    with get_session() as db:
-        existing = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
-        if existing:
-            # Idempotência: já existem resultados, retorna um batch_id fictício para fluxo
-            fake_id = 'fake_id_for_indepotency'
-            logging.info(f"UCs geradas já existem para run_id={run_id}, pulando submissão de batch. Retornando fake batch_id={fake_id}")
-            return fake_id
+def task_submit_uc_generation_batch(run_id: str) -> Optional[str]:
+    """
+    Prepara JSONL e submete batch de geração UC para um run_id.
+    Retorna o llm_batch_id do provedor, ou None se nada foi submetido.
+    A idempotência de "já existe UCs geradas?" foi movida para a API que gerencia PipelineBatchJob.
+    Esta função agora foca em:
+    1. Pegar as origens do DB.
+    2. Preparar o JSONL.
+    3. Submeter ao LLM.
+    """
+    logging.info(f"--- LOGIC: submit_uc_generation_batch (run_id={run_id}) ---")
     llm = get_llm_strategy()
+
+    with get_session() as db:
+        ku_origins_records = crud_knowledge_unit_origins.get_knowledge_unit_origins(db, run_id)
+
+    if not ku_origins_records:
+        logging.warning(
+            f"Nenhuma Knowledge Unit Origin encontrada no DB para run_id={run_id}. Nada a submeter para geração de UC.")
+        return None 
+
+    all_origins = ku_origins_records
+
+    graphrag_base_dir_for_selector = Path(
+        AIRFLOW_DATA_DIR) / run_id / "output"
+
+    if MAX_ORIGINS_FOR_TESTING is not None and MAX_ORIGINS_FOR_TESTING > 0:
+        selector = HubNeighborSelector(MAX_ORIGINS_FOR_TESTING, graphrag_base_dir_for_selector)
+    else:
+        selector = DefaultSelector(None)
+
+    origins_to_process = selector.select(all_origins)
+
+    if not origins_to_process:
+        logging.warning(
+            f"Nenhuma origem selecionada para processar para run_id={run_id} após filtragem/seleção. Nada a submeter.")
+        return None
+
     try:
-        with get_session() as db:
-            records = crud_knowledge_unit_origins.get_knowledge_unit_origins(db, run_id)
-        if not records:
-            logging.warning("Nenhuma origem para gerar UCs. Pulando submissão.")
-            return None
-        all_origins = records
-        # Seleção de origens via Strategy Pattern
-        if MAX_ORIGINS_FOR_TESTING is not None and MAX_ORIGINS_FOR_TESTING > 0:
-            selector = HubNeighborSelector(MAX_ORIGINS_FOR_TESTING, BASE_INPUT_DIR)
-        else:
-            selector = DefaultSelector(None)
-        origins_to_process = selector.select(all_origins)
-        if not origins_to_process:
-            logging.warning("Nenhuma origem selecionada para processar. Pulando submissão.")
-            return None
+        with open(PROMPT_UC_GENERATION_FILE, 'r', encoding='utf-8') as f:
+            prompt_template = f.read()
+    except Exception as e:
+        logging.error(f"Erro crítico lendo prompt de geração de UC '{PROMPT_UC_GENERATION_FILE}': {e}", exc_info=True)
+        raise ValueError(f"Falha ao ler prompt de geração: {e}")
 
-        try:
-            with open(PROMPT_UC_GENERATION_FILE, 'r', encoding='utf-8') as f: prompt_template = f.read()
-        except Exception as e: raise ValueError(f"Erro lendo prompt UC Gen: {e}")
+    _, _, batch_files_dir_for_run, _, _, _, _, _ = _get_dirs(run_id)
+    batch_files_dir_for_run.mkdir(parents=True, exist_ok=True)
 
-        # Prepara registros de batch e salva como JSONL via DataLake
-        _, _, _, _, _, _, batch_dir = _get_dirs(run_id)
-        batch_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        batch_input_filename = f"uc_generation_batch_{timestamp}.jsonl"
-        batch_input_path = batch_dir / batch_input_filename
-        records = []
-        for i, origin in enumerate(origins_to_process):
-            origin_id = origin.get("origin_id")
-            req_custom_id = f"gen_req_{origin_id}_{i}"  # ID único por request
-            title = origin.get("title", "N/A"); context_text = origin.get("context", "")
-            formatted_prompt = (
-                prompt_template
-                .replace("{{CONCEPT_TITLE}}", title)
-                .replace("{{CONTEXT}}", context_text if context_text else "N/A")
-            )
-            request_body = {
-                "model": LLM_MODEL,
-                "messages": [
-                    {"role": "system", "content": "..."},
-                    {"role": "user", "content": formatted_prompt}
-                ],
-                "temperature": LLM_TEMPERATURE_GENERATION,
-                "response_format": {"type": "json_object"}
-            }
-            records.append({
-                "custom_id": req_custom_id,
-                "method": "POST",
-                "url": "/v1/chat/completions",
-                "body": request_body
-            })
-        DataLake.write_jsonl(records, batch_input_path)
-        logging.info(f"Arquivo batch de geração criado: {batch_input_path} ({len(records)} requests)")
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    batch_input_filename = f"uc_generation_batch_{timestamp}_{run_id}.jsonl"
+    batch_input_path = batch_files_dir_for_run / batch_input_filename
 
-        # Envia batch via LLM strategy
+    llm_requests = []
+    for i, origin_data in enumerate(origins_to_process):
+        origin_id = origin_data.get("origin_id")
+        req_custom_id = f"gen_req_{origin_id}_{i}"
+
+        title = origin_data.get("title", "N/A")
+        context_text = origin_data.get("context", "")
+
+        formatted_prompt = (
+            prompt_template
+            .replace("{{CONCEPT_TITLE}}", title)
+            .replace("{{CONTEXT}}", context_text if context_text else "N/A")
+        )
+        request_body = {
+            "model": LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": "Você é um especialista em educação..."},
+                {"role": "user", "content": formatted_prompt}
+            ],
+            "temperature": LLM_TEMPERATURE_GENERATION,
+            "response_format": {"type": "json_object"}
+        }
+        llm_requests.append({
+            "custom_id": req_custom_id,
+            "method": "POST",
+            "url": "/v1/chat/completions",
+            "body": request_body
+        })
+
+    if not llm_requests:
+        logging.warning(f"Nenhum request LLM preparado para geração de UC (run_id: {run_id}). Nada a submeter.")
+        return None
+
+    DataLake.write_jsonl(llm_requests, batch_input_path)
+    logging.info(f"Arquivo batch de geração criado: {batch_input_path} ({len(llm_requests)} requests)")
+
+    try:
         logging.info(f"Fazendo upload de {batch_input_path} via LLM strategy...")
         file_id = llm.upload_batch_file(batch_input_path)
         logging.info(f"Upload concluído. File ID: {file_id}")
+
         logging.info("Criando batch job via LLM strategy...")
         batch_job_id = llm.create_batch_job(
             input_file_id=file_id,
             endpoint="/v1/chat/completions",
-            metadata={'description': 'UC Generation Batch'}
+            metadata={'description': f'UC Generation Batch for run_id {run_id}'}
         )
-        logging.info(f"Batch job criado. Batch ID: {batch_job_id}")
-
+        logging.info(f"Batch job de geração criado. LLM Batch ID: {batch_job_id}")
+        return batch_job_id
     except Exception as e:
-        logging.exception("Falha na task_submit_uc_generation_batch")
-        raise # Falha a tarefa do Airflow
-    return batch_job_id # Retorna para XCom
+        logging.exception(f"Falha ao submeter batch de geração de UC ao LLM (run_id: {run_id})")
+        raise
 
-def task_wait_and_process_batch_generic(batch_id_key: str, output_dir: Path, output_filename: str, **context):
-    """Tarefa Genérica: Espera e processa resultados de um batch job da OpenAI."""
-    ti = context['ti'] # TaskInstance para XComs
-    batch_id = ti.xcom_pull(task_ids=f'submit_{batch_id_key}_batch', key='return_value')
+def task_process_uc_generation_batch(run_id: str, llm_batch_id: str,
+                                     db_session_from_api: Optional[Session] = None) -> bool:
+    """
+    Processa resultados de geração UC para um run_id e llm_batch_id.
+    Usa db_session_from_api se fornecida, senão cria uma nova.
+    NÃO faz commit/rollback se db_session_from_api for usada.
+    Retorna True para sucesso, False para falha.
+    """
+    logging.info(f"--- LOGIC: process_uc_generation_batch (run_id={run_id}, llm_batch_id={llm_batch_id}) ---")
 
-    # if not batch_id:
-    #     logging.warning(f"Nenhum batch_id encontrado para {batch_id_key} via XCom. Pulando.")
-    #     # Garante arquivo vazio para downstream
-    #     output_dir.mkdir(parents=True, exist_ok=True)
-    #     # Gera DataFrame vazio com colunas definidas em DEFAULT_OUTPUT_COLUMNS
-    #     empty_cols = DEFAULT_OUTPUT_COLUMNS.get(output_filename, [])
-    #     save_dataframe(pd.DataFrame(columns=empty_cols), output_dir, output_filename)
-    #     return # Considera "sucesso" pois não havia nada a fazer
-
-    logging.info(f"--- TASK: wait_and_process_{batch_id_key}_results (Batch ID: {batch_id}) ---")
-
-    polling_interval_seconds = 60; max_polling_attempts = 120; attempts = 0
-    while attempts < max_polling_attempts:
-        attempts += 1; logging.info(f"Verificando status do batch {batch_id} (Tentativa {attempts})...")
+    def _core_logic(db: Session) -> bool:
         try:
-            status, output_file_id, error_file_id = check_batch_status(batch_id)
-            if status == 'completed':
-                if output_file_id:
-                    if process_batch_results(batch_id, output_file_id, error_file_id, output_dir, output_filename):
-                        logging.info(f"Processamento de {batch_id} concluído.")
-                        return # Sucesso
-                    else: raise ValueError(f"Falha ao processar resultados do batch {batch_id}")
-                else: raise ValueError(f"Batch {batch_id} completo mas sem output_file_id")
-            elif status in ['failed', 'expired', 'cancelled', 'API_ERROR']:
-                raise ValueError(f"Batch job {batch_id} falhou (Status: {status}).")
-            else: logging.info(f"Status: {status}. Aguardando {polling_interval_seconds}s..."); time.sleep(polling_interval_seconds)
-        except Exception as e: logging.exception(f"Erro no polling/processamento do batch {batch_id}"); raise
-    raise TimeoutError(f"Polling para batch {batch_id} excedeu {max_polling_attempts} tentativas.")
+            llm_status, output_file_id, error_file_id = check_batch_status(llm_batch_id)
 
-# Alias para compatibilidade com DAG: nome sem sufixo _generic
-task_wait_and_process_batch = task_wait_and_process_batch_generic
+            if llm_status != 'completed':
+                logging.error(
+                    f"LLM Batch {llm_batch_id} não está 'completed' (status atual: {llm_status}) ao tentar processar resultados.")
+                return False
+            if not output_file_id:
+                logging.error(f"LLM Batch {llm_batch_id} está 'completed' mas não possui output_file_id.")
+                return False
+
+            logging.info(f"LLM Batch {llm_batch_id} confirmado como 'completed'. output_file_id: {output_file_id}")
+
+            _, _, _, s1_dir, s2_dir_for_run, s3_dir, s4_dir, s5_dir = _get_dirs(run_id)
+
+            processing_ok = process_batch_results(
+                batch_id=llm_batch_id,
+                output_file_id=output_file_id,
+                error_file_id=error_file_id,
+                stage_output_dir=s2_dir_for_run,
+                output_filename=GENERATED_UCS_RAW,
+                run_id=run_id,
+                db=db
+            )
+
+            if processing_ok:
+                logging.info(f"Processamento dos resultados do LLM Batch {llm_batch_id} (geração UC) bem-sucedido.")
+                return True
+            else:
+                logging.error(
+                    f"Falha no processamento interno dos resultados do LLM Batch {llm_batch_id} (geração UC).")
+                return False
+        except Exception as e:
+            logging.exception(
+                f"Erro crítico durante process_uc_generation_batch (run_id={run_id}, llm_batch_id={llm_batch_id})")
+            return False
+
+    if db_session_from_api:
+        return _core_logic(db_session_from_api)
+    else:
+        with get_session() as db:
+            success = _core_logic(db)
+            if success:
+                db.commit()
+            else:
+                db.rollback()
+            return success
 
 
-def task_define_relationships(run_id: str, **context):
+def task_define_relationships(run_id: str):
     """
-    Tarefa: Define relações REQUIRES e EXPANDS usando Builders e salva
-    na tabela intermediária, garantindo atomicidade.
-
-    Levanta erro se os inputs necessários do banco (UCs geradas, dados GraphRAG)
-    não forem encontrados ou se ocorrer um erro durante a construção/salvamento
-    das relações.
+    Define relações REQUIRES e EXPANDS e salva na tabela intermediária.
+    A API que chama esta função gerencia a idempotência e a transação.
     """
-    logging.info(f"--- TASK: define_relationships (run_id={run_id}) ---")
-    task_successful = False
+    logging.info(f"--- LOGIC: define_relationships (run_id={run_id}) ---")
 
-    # Abrir a sessão UMA VEZ para toda a task
     with get_session() as db:
         try:
-            # 1. Verificar idempotência para relações intermediárias
             existing_rels = crud_rel_intermediate.get_knowledge_relationships_intermediate(db, run_id)
             if existing_rels:
-                logging.info(f"Relações intermediárias já existem para run_id={run_id}. Pulando definição.")
-                task_successful = True
+                logging.info(f"Relações intermediárias já existem no DB para run_id={run_id}. Pulando definição.")
+                logging.info(f"--- LOGIC: define_relationships CONCLUÍDA (Idempotente) (run_id={run_id}) ---")
+                return
 
+            logging.info("Carregando dados necessários do banco para definir relações...")
+            generated_ucs_records = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
+            graphrag_rels_records = crud_graphrag_relationships.get_relationships(db, run_id)
+            graphrag_ents_records = crud_graphrag_entities.get_entities(db, run_id)
+
+            if not generated_ucs_records:
+                raise ValueError(
+                    f"Erro crítico: Nenhum registro de UCs geradas (generated_ucs_raw) encontrado no banco para run_id={run_id}.")
+
+            if not graphrag_rels_records:
+                logging.warning(
+                    f"Nenhum registro de relações GraphRAG (graphrag_relationships) encontrado para run_id={run_id}. Relações EXPANDS podem não ser geradas ou ser limitadas.")
+            if not graphrag_ents_records:
+                logging.warning(
+                    f"Nenhum registro de entidades GraphRAG (graphrag_entities) encontrado para run_id={run_id}. Relações EXPANDS podem ser afetadas.")
+
+            generated_ucs_df = pd.DataFrame(generated_ucs_records)
+            relationships_df_graphrag = pd.DataFrame(graphrag_rels_records if graphrag_rels_records else [])
+            entities_df_graphrag = pd.DataFrame(graphrag_ents_records if graphrag_ents_records else [])
+
+            context_for_builders = {
+                'generated_ucs': generated_ucs_df.to_dict('records'),
+                'relationships_df': relationships_df_graphrag,
+                'entities_df': entities_df_graphrag
+            }
+
+            logging.info("Construindo relações REQUIRES e EXPANDS...")
+            builder = RequiresBuilder()
+            builder.set_next(ExpandsBuilder())
+
+            all_intermediate_rels = builder.build([], context_for_builders)
+            logging.info(f"Total de {len(all_intermediate_rels)} relações intermediárias construídas.")
+
+            if all_intermediate_rels:
+                crud_rel_intermediate.add_knowledge_relationships_intermediate(db, run_id, all_intermediate_rels)
+                logging.info("Relações intermediárias adicionadas à sessão do banco (pendente de commit).")
             else:
-                 # 2. Carregar dados de entrada necessários do banco
-                logging.info("Carregando dados necessários do banco para definir relações...")
-                generated_records = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
-                graphrag_rels_records = crud_graphrag_relationships.get_relationships(db, run_id)
-                graphrag_ents_records = crud_graphrag_entities.get_entities(db, run_id)
+                logging.warning("Nenhuma relação intermediária foi construída.")
 
-                # Validar se os dados essenciais foram carregados
-                if not generated_records:
-                    raise ValueError(f"Erro crítico: Nenhum registro de UCs geradas (generated_ucs_raw) encontrado no banco para run_id={run_id}.")
+            db.commit()
+            logging.info(f"--- LOGIC: define_relationships CONCLUÍDA com sucesso (run_id={run_id}) ---")
 
-                if not graphrag_rels_records:
-                     logging.warning(f"Nenhum registro de relações GraphRAG (graphrag_relationships) encontrado para run_id={run_id}. Relações EXPANDS não serão geradas.")
-                if not graphrag_ents_records:
-                     logging.warning(f"Nenhum registro de entidades GraphRAG (graphrag_entities) encontrado para run_id={run_id}. Relações EXPANDS podem falhar ou ser incompletas.")
-
-
-                # 3. Preparar dados para os builders
-                generated_df = pd.DataFrame(generated_records)
-                relationships_df = pd.DataFrame(graphrag_rels_records) # Pode ser vazio
-                entities_df = pd.DataFrame(graphrag_ents_records) # Pode ser vazio
-
-                generated_ucs = generated_df.to_dict('records')
-                ctx = {
-                    'generated_ucs': generated_ucs,
-                    'relationships_df': relationships_df,
-                    'entities_df': entities_df
-                }
-
-                # 4. Construir relações usando a cadeia de builders
-                logging.info("Construindo relações REQUIRES e EXPANDS...")
-                builder = RequiresBuilder()
-                builder.set_next(ExpandsBuilder())
-
-                all_rels = builder.build([], ctx) # Começa com lista vazia
-                logging.info(f"Total de {len(all_rels)} relações intermediárias construídas.")
-
-                # 5. Persistir resultados na tabela intermediária (pendente na transação)
-                logging.info("Adicionando relações intermediárias ao banco de dados (pendente)...")
-                crud_rel_intermediate.add_knowledge_relationships_intermediate(db, run_id, all_rels or [])
-
-                # 6. Commitar a transação se tudo ocorreu bem
-                db.commit()
-                task_successful = True
-
-        except Exception as e:
-            # 7. Se qualquer erro ocorreu
-            logging.error(f"Erro durante task_define_relationships para run_id={run_id}: {e}", exc_info=True)
-            logging.info("Fazendo rollback das alterações da transação...")
+        except ValueError as ve:
+            logging.error(f"Erro de valor durante define_relationships: {ve}", exc_info=True)
             db.rollback()
-            logging.info("Rollback concluído.")
+            logging.error(f"--- LOGIC: define_relationships FALHOU (Erro de Valor) (run_id={run_id}) ---")
+            raise
+        except Exception as e:
+            logging.error(f"Erro geral durante define_relationships: {e}", exc_info=True)
+            db.rollback()
+            logging.error(f"--- LOGIC: define_relationships FALHOU (Erro Geral) (run_id={run_id}) ---")
             raise
 
-    # Log final fora do bloco `with`
-    if task_successful:
-        log_message = "CONCLUÍDA com sucesso"
-        if 'existing_rels' in locals() and existing_rels:
-             log_message = "CONCLUÍDA (Idempotente - relações já existiam)"
-        logging.info(f"--- TASK define_relationships {log_message} (run_id={run_id}) ---")
-    else:
-        logging.error(f"--- TASK define_relationships FALHOU (run_id={run_id}) ---")
 
-
-def task_submit_difficulty_batch(run_id: str, **context):
-    logging.info(f"--- TASK: submit_difficulty_batch (run_id={run_id}) ---")
+def task_submit_difficulty_batch(run_id: str) -> Optional[str]:
+    """
+    Prepara e submete batch de avaliação de dificuldade.
+    Retorna o llm_batch_id do provedor, ou None se nada foi submetido.
+    A idempotência de alto nível é tratada pela API.
+    """
+    logging.info(f"--- LOGIC: submit_difficulty_batch (run_id={run_id}) ---")
 
     with get_session() as db_read:
-        existing_evals = crud_knowledge_unit_evaluations_batch.get_knowledge_unit_evaluations_batch(db_read, run_id)
-        if existing_evals:
-            fake_batch_id = "fake_id_for_indepotency"
-            logging.info(
-                f"Dados de dificuldade (avaliações) já podem existir para run_id={run_id}. Pulando. Retornando fake batch_id={fake_batch_id}")
-            return fake_batch_id
-
         generated_ucs_raw_list = crud_generated_ucs_raw.get_generated_ucs_raw(db_read, run_id)
         if not generated_ucs_raw_list:
-            logging.warning("Nenhuma UC gerada (raw) para avaliar dificuldade. Pulando submissão de batch.")
-            return "fake_id_for_indepotency"
+            logging.warning(
+                f"Nenhuma UC gerada (raw) encontrada no DB para run_id={run_id} para avaliação de dificuldade. Nada a submeter.")
+            return None
 
         all_knowledge_origins_list = crud_knowledge_unit_origins.get_knowledge_unit_origins(db_read, run_id)
         if not all_knowledge_origins_list:
-            logging.error(f"Knowledge Origins não encontradas para run_id={run_id}, mas UCs geradas existem. Crítico.")
-            return "fake_id_for_indepotency"
-
-    ucs_by_origin_then_bloom: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(lambda: defaultdict(dict))
-    for uc_raw in generated_ucs_raw_list:
-        origin_id = str(uc_raw.get('origin_id'))
-        bloom_level = uc_raw.get('bloom_level')
-        if origin_id and bloom_level:
-            ucs_by_origin_then_bloom[origin_id][bloom_level] = uc_raw
-
-    scheduler = OriginDifficultyScheduler(
-        all_knowledge_origins=all_knowledge_origins_list,
-        min_evaluations_per_origin=MIN_EVALUATIONS_PER_UC,
-        difficulty_batch_size=DIFFICULTY_BATCH_SIZE
-    )
-    paired_origin_sets_with_coherence = scheduler.generate_origin_pairings()
-
-    if not paired_origin_sets_with_coherence:
-        logging.info("Nenhum conjunto de origens foi pareado pelo scheduler para avaliação. Nada a submeter.")
-        return "fake_id_for_indepotency"
-
-    try:
-        with open(PROMPT_UC_DIFFICULTY_FILE, 'r', encoding='utf-8') as f:
-            prompt_template = f.read()
-    except Exception as e:
-        logging.error(f"Erro lendo prompt de dificuldade '{PROMPT_UC_DIFFICULTY_FILE}': {e}", exc_info=True)
-        raise ValueError(f"Erro crítico: Falha ao ler prompt de dificuldade: {e}")
-
-    requests_for_llm_batch: List[Dict[str, Any]] = []
+            logging.error(
+                f"Knowledge Origins não encontradas para run_id={run_id}, mas UCs geradas (raw) existem. Crítico. Não é possível submeter para dificuldade.")
+            return None 
 
     with get_session() as db_for_groups_write:
+        ucs_by_origin_then_bloom: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(lambda: defaultdict(dict))
+        for uc_raw_dict in generated_ucs_raw_list:
+            origin_id = str(uc_raw_dict.get('origin_id'))
+            bloom_level = uc_raw_dict.get('bloom_level')
+            if origin_id and bloom_level:
+                ucs_by_origin_then_bloom[origin_id][bloom_level] = uc_raw_dict
+
+        scheduler = OriginDifficultyScheduler(
+            all_knowledge_origins=all_knowledge_origins_list,
+            min_evaluations_per_origin=MIN_EVALUATIONS_PER_UC,
+            difficulty_batch_size=DIFFICULTY_BATCH_SIZE
+        )
+        paired_origin_sets_with_coherence = scheduler.generate_origin_pairings()
+
+        if not paired_origin_sets_with_coherence:
+            logging.info(
+                f"Nenhum conjunto de origens foi pareado pelo scheduler para avaliação de dificuldade (run_id: {run_id}). Nada a submeter.")
+            return None
+
+        try:
+            with open(PROMPT_UC_DIFFICULTY_FILE, 'r', encoding='utf-8') as f:
+                prompt_template = f.read()
+        except Exception as e:
+            logging.error(f"Erro crítico lendo prompt de dificuldade '{PROMPT_UC_DIFFICULTY_FILE}': {e}", exc_info=True)
+            raise ValueError(f"Falha ao ler prompt de dificuldade: {e}")
+
+        requests_for_llm_batch: List[Dict[str, Any]] = []
         num_groups_created_for_llm = 0
 
         for pairing_info in paired_origin_sets_with_coherence:
@@ -610,14 +612,10 @@ def task_submit_difficulty_batch(run_id: str, **context):
                         })
                     else:
                         can_form_valid_llm_request = False
-                        logging.debug(
-                            f"Origem {origin_id_in_group} no par {origin_ids_in_current_pairing} não tem UC para Bloom {current_bloom_level}. "
-                            f"Pulando request LLM para este grupo/bloom específico.")
                         break
 
                 if can_form_valid_llm_request and len(ucs_for_this_llm_request) == DIFFICULTY_BATCH_SIZE:
                     num_groups_created_for_llm += 1
-
                     generated_comparison_group_id = str(uuid.uuid4())
                     openai_llm_custom_id = f"comp_group={generated_comparison_group_id}"
 
@@ -629,39 +627,19 @@ def task_submit_difficulty_batch(run_id: str, **context):
                         llm_batch_request_custom_id=openai_llm_custom_id
                     )
                     db_for_groups_write.add(new_db_comparison_group)
+                    db_for_groups_write.flush()
 
-                    try:
-                        logging.debug(
-                            f"Flushing DB session to persist DifficultyComparisonGroup: {generated_comparison_group_id}")
-                        db_for_groups_write.flush()
-                    except Exception as flush_exc:
-                        logging.error(
-                            f"DB Flush FAILED for ComparisonGroup {generated_comparison_group_id} (run_id: {run_id}): {flush_exc}",
-                            exc_info=True)
-                        db_for_groups_write.rollback()
-                        raise 
-
-                    association_entries_to_insert = []
-                    for origin_id_in_group_item in origin_ids_in_current_pairing:
-                        association_entries_to_insert.append({
+                    association_entries = [
+                        {
                             "pipeline_run_id": run_id,
                             "comparison_group_id": generated_comparison_group_id,
                             "origin_id": origin_id_in_group_item,
                             "is_seed_origin": (origin_id_in_group_item == seed_origin_id_for_pairing)
-                        })
-
-                    if association_entries_to_insert:
-                        try:
-                            logging.debug(
-                                f"Inserting {len(association_entries_to_insert)} associations for ComparisonGroup {generated_comparison_group_id}")
-                            db_for_groups_write.execute(models.difficulty_group_origin_association.insert(),
-                                                        association_entries_to_insert)
-                        except Exception as assoc_exc:
-                            logging.error(
-                                f"DB Insert FAILED for associations of ComparisonGroup {generated_comparison_group_id} (run_id: {run_id}): {assoc_exc}",
-                                exc_info=True)
-                            db_for_groups_write.rollback()
-                            raise
+                        } for origin_id_in_group_item in origin_ids_in_current_pairing
+                    ]
+                    if association_entries:
+                        db_for_groups_write.execute(models.difficulty_group_origin_association.insert(),
+                                                    association_entries)
 
                     formatted_prompt_text_for_llm = _format_difficulty_prompt(ucs_for_this_llm_request, prompt_template)
                     request_body_for_llm = {
@@ -677,44 +655,29 @@ def task_submit_difficulty_batch(run_id: str, **context):
                         "url": "/v1/chat/completions",
                         "body": request_body_for_llm
                     })
-                elif can_form_valid_llm_request and ucs_for_this_llm_request:
-                    logging.warning(
-                        f"LLM request para par {origin_ids_in_current_pairing} e nível Bloom {current_bloom_level} "
-                        f"teria {len(ucs_for_this_llm_request)} UCs, mas são necessárias {DIFFICULTY_BATCH_SIZE}. Pulando este LLM request específico.")
 
-        if requests_for_llm_batch:
-            logging.info(f"Attempting to commit {num_groups_created_for_llm} DifficultyComparisonGroup records "
-                         f"and their associations to DB for run_id {run_id}.")
-            try:
-                db_for_groups_write.commit()
-                logging.info("Successfully committed new comparison groups and associations to DB.")
-            except Exception as final_commit_exc:
-                logging.error(
-                    f"FINAL DB COMMIT FAILED for new comparison groups (run_id: {run_id}): {final_commit_exc}",
-                    exc_info=True)
-                db_for_groups_write.rollback()
-                raise 
-        elif num_groups_created_for_llm > 0 and not requests_for_llm_batch:
-            logging.warning(
-                f"{num_groups_created_for_llm} groups were prepared in session but no LLM requests were generated. Rolling back DB changes.")
+        if not requests_for_llm_batch:
+            logging.info(
+                f"Nenhum request LLM preparado para avaliação de dificuldade (run_id: {run_id}). Nada a submeter.")
+            if num_groups_created_for_llm > 0: db_for_groups_write.rollback()
+            return None
+
+        try:
+            db_for_groups_write.commit()
+            logging.info(
+                f"Successfully committed {num_groups_created_for_llm} DifficultyComparisonGroups for run_id {run_id}.")
+        except Exception as e_commit:
             db_for_groups_write.rollback()
-        else:
-            logging.info("No comparison groups were added to the DB session and no LLM requests generated.")
-
-    if not requests_for_llm_batch:
-        logging.info(
-            "Nenhum request de LLM para avaliação de dificuldade foi gerado após processar todos os pares/níveis. Nada a submeter ao LLM.")
-        return "fake_id_for_indepotency"
+            logging.error(f"Failed to commit DifficultyComparisonGroups for run_id {run_id}: {e_commit}", exc_info=True)
+            raise
 
     llm = get_llm_strategy()
-
-    _, _, _, s4_input_dir, _, _, batch_files_overall_dir = _get_dirs(run_id)
-
-    batch_files_overall_dir.mkdir(parents=True, exist_ok=True)
+    _, work_dir_for_run, batch_files_dir_for_run, _, _, _, _, _ = _get_dirs(run_id)
+    batch_files_dir_for_run.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     batch_input_filename = f"uc_difficulty_batch_input_{timestamp}_{run_id}.jsonl"
-    batch_input_path = batch_files_overall_dir / batch_input_filename
+    batch_input_path = batch_files_dir_for_run / batch_input_filename
 
     DataLake.write_jsonl(requests_for_llm_batch, batch_input_path)
     logging.info(f"Arquivo batch de dificuldade ({len(requests_for_llm_batch)} requests) criado: {batch_input_path}")
@@ -723,264 +686,182 @@ def task_submit_difficulty_batch(run_id: str, **context):
         file_id = llm.upload_batch_file(batch_input_path)
         logging.info(f"Upload do arquivo de batch de dificuldade concluído. File ID: {file_id}")
 
-        batch_job_id = llm.create_batch_job(
+        batch_job_id_from_provider = llm.create_batch_job(
             input_file_id=file_id,
             endpoint="/v1/chat/completions",
             metadata={'description': f'UC Difficulty Evaluation Batch for run_id {run_id}'}
         )
-        logging.info(f"Batch job de dificuldade submetido. Batch ID: {batch_job_id}")
-        return batch_job_id
+        logging.info(f"Batch job de dificuldade submetido. LLM Batch ID: {batch_job_id_from_provider}")
+        return batch_job_id_from_provider
     except Exception as e:
-        logging.error(f"Erro durante upload ou criação do batch job de dificuldade (run_id: {run_id}): {e}",
-                      exc_info=True)
-        # Os grupos de comparação já foram commitados.
+        logging.exception(f"Falha ao submeter batch de dificuldade ao LLM (run_id: {run_id})")
         raise
 
-def task_finalize_outputs(run_id: str, **context):
-    """
-    Tarefa: Combina UCs geradas com avaliações de dificuldade,
-    calcula scores finais, salva UCs e Relações finais no banco,
-    e atualiza o status do PipelineRun para 'success', garantindo atomicidade.
 
-    Levanta erro se inputs cruciais (UCs geradas) não forem encontrados no banco,
-    ou se ocorrer um erro durante o processamento ou salvamento final.
+def task_process_difficulty_batch(run_id: str, llm_batch_id: str,
+                                  db_session_from_api: Optional[Session] = None) -> bool:
     """
-    logging.info(f"--- TASK: finalize_outputs (run_id={run_id}) ---")
-    task_successful = False
-    final_log_message = "FALHOU"
+    Processa resultados de avaliação de dificuldade para um run_id e llm_batch_id.
+    Usa db_session_from_api se fornecida. NÃO faz commit/rollback se db_session_from_api for usada.
+    Retorna True para sucesso, False para falha.
+    """
+    logging.info(f"--- LOGIC: process_difficulty_batch (run_id={run_id}, llm_batch_id={llm_batch_id}) ---")
 
-    with get_session() as db:
+    def _core_logic(db: Session) -> bool:
         try:
-            # 1. Verificar idempotência para outputs finais (checando UCs finais)
-            run_status = None
-            existing_run = crud_runs.get_run(db, run_id)
-            if existing_run:
-                run_status = existing_run.status
-
-            existing_final_ucs = crud_final_ucs.get_final_knowledge_units(db, run_id)
-
-            if existing_final_ucs and run_status == 'success':
-                logging.info(f"Outputs finais já existem e PipelineRun status é 'success' para run_id={run_id}. Pulando finalização.")
-                task_successful = True
-                final_log_message = "CONCLUÍDA (Idempotente - outputs e status já OK)"
-
-            elif existing_final_ucs and run_status != 'success':
-                 logging.warning(f"Outputs finais existem, mas status do PipelineRun ({run_status}) não é 'success' para run_id={run_id}. Tentando apenas atualizar status...")
-                 try:
-                     # Assumindo que update_run_status agora tem commit=True por padrão
-                     crud_runs.update_run_status(db, run_id, status='success')
-                     logging.info("Status do PipelineRun atualizado para 'success'.")
-                     task_successful = True
-                     final_log_message = "CONCLUÍDA (Outputs já existiam, status atualizado)"
-                 except Exception as status_err:
-                      logging.error(f"Falha ao tentar atualizar status para 'success' (outputs já existiam): {status_err}", exc_info=True)
-                      final_log_message = "CONCLUÍDA (Outputs já existiam, FALHA ao atualizar status)"
-
-            else:
-                 logging.info("Outputs finais não encontrados ou run status não é 'success'. Procedendo com a finalização...")
-
-                 # 2. Carregar dados de entrada necessários do banco
-                 logging.info("Carregando dados intermediários do banco para finalização...")
-                 generated_records = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
-                 rels_intermed_records = crud_rel_intermediate.get_knowledge_relationships_intermediate(db, run_id)
-                 evals_records = crud_knowledge_unit_evaluations_batch.get_knowledge_unit_evaluations_batch(db, run_id)
-
-                 if not generated_records:
-                     raise ValueError(f"Erro crítico: Nenhum registro de UCs geradas (generated_ucs_raw) encontrado no banco para run_id={run_id}.")
-
-                 # Logs informativos sobre inputs opcionais
-                 if not rels_intermed_records:
-                     logging.warning(f"Nenhum registro de relações intermediárias encontrado para run_id={run_id}. A tabela final_knowledge_relationships ficará vazia.")
-                     rels_intermed_records = []
-                 if not evals_records:
-                     logging.warning(f"Nenhuma avaliação de dificuldade bruta encontrada para run_id={run_id}. UCs finais não terão scores.")
-                     evals_records = []
-
-                 # 3. Processar avaliações e calcular scores finais
-                 final_ucs_list: List[Dict[str, Any]] = []
-                 generated_ucs_list = generated_records
-
-                 if evals_records:
-                     logging.info("Calculando scores finais de dificuldade...")
-                     final_ucs_list, evaluated_count, min_evals_met_count = _calculate_final_difficulty_from_raw(
-                         generated_ucs_list, evals_records
-                     )
-                     logging.info(f"Cálculo de dificuldade concluído: {evaluated_count} UCs com score, {min_evals_met_count} atingiram o mínimo.")
-                 else:
-                     logging.info("Nenhuma avaliação encontrada, marcando UCs finais como não avaliadas.")
-                     for uc in generated_ucs_list:
-                         uc_copy = uc.copy()
-                         uc_copy["difficulty_score"] = None
-                         uc_copy["difficulty_justification"] = "Não avaliado"
-                         uc_copy["evaluation_count"] = 0
-                         final_ucs_list.append(uc_copy)
-
-                 if not final_ucs_list:
-                     raise ValueError("Erro inesperado: Lista final de UCs vazia após processamento.")
-
-                 # 4. Adicionar UCs Finais ao banco (pendente)
-                 logging.info(f"Adicionando {len(final_ucs_list)} UCs finais ao banco (pendente)...")
-                 crud_final_ucs.add_final_knowledge_units(db, run_id, final_ucs_list)
-
-                 # 5. Adicionar Relações Finais ao banco (pendente)
-                 logging.info(f"Adicionando {len(rels_intermed_records)} relações finais ao banco (pendente)...")
-                 crud_final_rels.add_final_knowledge_relationships(db, run_id, rels_intermed_records)
-
-                 # 6. Atualizar status do PipelineRun para 'success' (pendente)
-                 logging.info("Atualizando status do PipelineRun para 'success' (pendente)...")
-                 # Chama a função refatorada com commit=False
-                 crud_runs.update_run_status(db, run_id, status='success', commit=False)
-
-                 # 7. Commitar TODAS as alterações (UCs finais, Rels finais, Status do Run)
-                 logging.info("Commitando outputs finais e atualização de status do Run...")
-                 db.commit()
-                 logging.info("Commit atômico bem-sucedido.")
-                 task_successful = True
-                 final_log_message = "CONCLUÍDA com sucesso"
-
-        except Exception as e:
-            logging.error(f"Erro durante task_finalize_outputs para run_id={run_id}: {e}", exc_info=True)
-            logging.info("Fazendo rollback das alterações da transação (outputs finais, status)...")
-            db.rollback()
-            logging.info("Rollback concluído.")
-            final_log_message = "FALHOU"
-            raise
-
-    log_level = logging.INFO if task_successful else logging.ERROR
-    logging.log(log_level, f"--- TASK finalize_outputs {final_log_message} (run_id={run_id}) ---")
-    
-
-def task_process_uc_generation_batch(run_id: str, batch_id: str, **context) -> bool:
-    """
-    Processa resultados de geração UC para um run_id e batch_id,
-    salvando no banco de forma atômica.
-    """
-    logging.info(f"--- TASK: process_uc_generation_batch (run_id={run_id}, batch_id={batch_id}) ---")
-    task_successful = False
-    final_log_message = "FALHOU"
-
-    # Se for o ID falso de idempotência, sucesso imediato
-    if batch_id == "fake_id_for_indepotency":
-         logging.info("Batch ID é 'fake_id_for_indepotency', indicando etapa anterior pulada. Sucesso idempotente.")
-         task_successful = True
-         final_log_message = "CONCLUÍDA (Idempotente - batch anterior pulado)"
-         logging.info(f"--- TASK process_uc_generation_batch {final_log_message} (run_id={run_id}) ---")
-         return True
-
-
-    # Abrir sessão única para a task
-    with get_session() as db:
-        try:
-            # 1. Checar status do batch
-            logging.info(f"Verificando status final do batch {batch_id}...")
-            status, output_file_id, error_file_id = check_batch_status(batch_id)
-
-            if status != 'completed':
-                raise ValueError(f"Batch {batch_id} não está 'completed' (status: {status}) ao iniciar processamento.")
+            llm_status, output_file_id, error_file_id = check_batch_status(llm_batch_id)
+            if llm_status != 'completed':
+                logging.error(f"LLM Batch {llm_batch_id} (dificuldade) não está 'completed' (status: {llm_status}).")
+                return False
             if not output_file_id:
-                 raise ValueError(f"Batch {batch_id} está 'completed' mas não possui output_file_id.")
+                logging.error(f"LLM Batch {llm_batch_id} (dificuldade) está 'completed' mas sem output_file_id.")
+                return False
 
-            logging.info(f"Batch {batch_id} confirmado como 'completed'. output_file_id: {output_file_id}")
+            logging.info(
+                f"LLM Batch {llm_batch_id} (dificuldade) confirmado 'completed'. output_file_id: {output_file_id}")
 
-            # 2. Chamar process_batch_results passando a sessão db
-            logging.info("Iniciando processamento e adição ao banco (pendente)...")
+            _, _, _, _, s4_dir_for_run, _, _, _ = _get_dirs(run_id)
 
-            _, _, s2, _, _, _, _ = _get_dirs(run_id)
-            
             processing_ok = process_batch_results(
-                batch_id=batch_id,
+                batch_id=llm_batch_id,
                 output_file_id=output_file_id,
                 error_file_id=error_file_id,
-                stage_output_dir=s2,
-                output_filename=GENERATED_UCS_RAW,
-                run_id=run_id,
-                db=db
-            )
-
-            # 3. Verificar resultado e commitar/rollback
-            if processing_ok:
-                logging.info("Processamento do batch bem-sucedido. Commitando transação...")
-                db.commit()
-                task_successful = True
-                final_log_message = "CONCLUÍDA com sucesso"
-            else:
-                logging.error("process_batch_results indicou falha. Fazendo rollback...")
-                db.rollback()
-                raise RuntimeError(f"Falha no processamento do arquivo de resultados do batch {batch_id}.")
-
-        except Exception as e:
-            logging.error(f"Erro durante task_process_uc_generation_batch para run_id={run_id}, batch_id={batch_id}: {e}", exc_info=True)
-            logging.info("Fazendo rollback das alterações da transação (se houver)...")
-            db.rollback()
-            final_log_message = "FALHOU"
-            raise
-
-    log_level = logging.INFO if task_successful else logging.ERROR
-    logging.log(log_level, f"--- TASK process_uc_generation_batch {final_log_message} (run_id={run_id}) ---")
-    return task_successful
-
-
-def task_process_difficulty_batch(run_id: str, batch_id: str, **context) -> bool:
-    """
-    Processa resultados de avaliação de dificuldade para um run_id e batch_id,
-    salvando no banco de forma atômica.
-    """
-    logging.info(f"--- TASK: process_difficulty_batch (run_id={run_id}, batch_id={batch_id}) ---")
-    task_successful = False
-    final_log_message = "FALHOU"
-
-    if batch_id == "fake_id_for_indepotency":
-         logging.info("Batch ID é 'fake_id_for_indepotency', indicando etapa anterior pulada. Sucesso idempotente.")
-         task_successful = True
-         final_log_message = "CONCLUÍDA (Idempotente - batch anterior pulado)"
-         logging.info(f"--- TASK process_difficulty_batch {final_log_message} (run_id={run_id}) ---")
-         return True
-
-    with get_session() as db:
-        try:
-            logging.info(f"Verificando status final do batch {batch_id}...")
-            status, output_file_id, error_file_id = check_batch_status(batch_id)
-
-            if status != 'completed':
-                raise ValueError(f"Batch {batch_id} não está 'completed' (status: {status}) ao iniciar processamento.")
-            if not output_file_id:
-                 raise ValueError(f"Batch {batch_id} está 'completed' mas não possui output_file_id.")
-
-            logging.info(f"Batch {batch_id} confirmado como 'completed'. output_file_id: {output_file_id}")
-
-            logging.info("Iniciando processamento e adição ao banco (pendente)...")
-            
-            _, _, _, _, s4, _, _ = _get_dirs(run_id)
-            processing_ok = process_batch_results(
-                batch_id=batch_id,
-                output_file_id=output_file_id,
-                error_file_id=error_file_id,
-                stage_output_dir=s4,
+                stage_output_dir=s4_dir_for_run,
                 output_filename=UC_EVALUATIONS_RAW,
                 run_id=run_id,
                 db=db
             )
 
-            # 3. Verificar resultado e commitar/rollback
             if processing_ok:
-                logging.info("Processamento do batch bem-sucedido. Commitando transação...")
-                db.commit()
-                task_successful = True
-                final_log_message = "CONCLUÍDA com sucesso"
+                logging.info(f"Processamento dos resultados do LLM Batch {llm_batch_id} (dificuldade) bem-sucedido.")
+                return True
             else:
-                logging.error("process_batch_results indicou falha. Fazendo rollback...")
-                db.rollback()
-                raise RuntimeError(f"Falha no processamento do arquivo de resultados do batch {batch_id}.")
-
+                logging.error(
+                    f"Falha no processamento interno dos resultados do LLM Batch {llm_batch_id} (dificuldade).")
+                return False
         except Exception as e:
-            logging.error(f"Erro durante task_process_difficulty_batch para run_id={run_id}, batch_id={batch_id}: {e}", exc_info=True)
-            logging.info("Fazendo rollback das alterações da transação (se houver)...")
-            db.rollback()
-            final_log_message = "FALHOU"
-            raise
+            logging.exception(
+                f"Erro crítico durante process_difficulty_batch (run_id={run_id}, llm_batch_id={llm_batch_id})")
+            return False
 
-    # Log final
-    log_level = logging.INFO if task_successful else logging.ERROR
-    logging.log(log_level, f"--- TASK process_difficulty_batch {final_log_message} (run_id={run_id}) ---")
-    return task_successful
-        
+    if db_session_from_api:
+        return _core_logic(db_session_from_api)
+    else:
+        with get_session() as db:
+            success = _core_logic(db)
+            if success:
+                db.commit()
+            else:
+                db.rollback()
+            return success
+
+
+def task_finalize_outputs(run_id: str):
+    """
+    Combina UCs geradas com avaliações de dificuldade, calcula scores finais,
+    salva UCs e Relações finais no banco, e atualiza o status do PipelineRun.
+    A API que chama esta função gerencia a idempotência de alto nível e a transação principal.
+    """
+    logging.info(f"--- LOGIC: finalize_outputs (run_id={run_id}) ---")
+
+    with get_session() as db:
+        try:
+            existing_final_ucs = crud_final_ucs.get_final_knowledge_units(db, run_id)
+            existing_final_rels = crud_final_rels.get_final_knowledge_relationships(db, run_id)
+            db_run = crud_runs.get_run(db, run_id)
+
+            if not db_run:
+                logging.error(f"PipelineRun {run_id} não encontrado no DB ao tentar finalizar outputs.")
+                raise ValueError(f"PipelineRun {run_id} não existe.")
+
+            if existing_final_ucs and existing_final_rels and db_run.status == 'success':
+                logging.info(
+                    f"Outputs finais já existem e PipelineRun status é 'success' para run_id={run_id}. Pulando finalização.")
+                logging.info(f"--- LOGIC: finalize_outputs CONCLUÍDA (Idempotente) (run_id={run_id}) ---")
+                return
+
+            if existing_final_ucs and existing_final_rels and db_run.status != 'success':
+                logging.warning(
+                    f"Outputs finais existem para run_id={run_id}, mas run status é '{db_run.status}'. Tentando apenas atualizar status do run para 'success'.")
+                crud_runs.update_run_status(db, run_id, status='success')
+                logging.info(f"PipelineRun {run_id} status atualizado para 'success'.")
+                logging.info(f"--- LOGIC: finalize_outputs CONCLUÍDA (Status do Run atualizado) (run_id={run_id}) ---")
+                return
+
+            logging.info("Carregando dados intermediários do banco para finalização...")
+            generated_ucs_raw_list = crud_generated_ucs_raw.get_generated_ucs_raw(db, run_id)
+            rels_intermed_list = crud_rel_intermediate.get_knowledge_relationships_intermediate(db, run_id)
+            evals_raw_list = crud_knowledge_unit_evaluations_batch.get_knowledge_unit_evaluations_batch(db, run_id)
+
+            if not generated_ucs_raw_list:
+                raise ValueError(
+                    f"Erro crítico: Nenhum registro de UCs geradas (generated_ucs_raw) encontrado no banco para run_id={run_id} ao finalizar.")
+
+            if not rels_intermed_list:
+                logging.warning(
+                    f"Nenhum registro de relações intermediárias encontrado para run_id={run_id}. Tabela final_knowledge_relationships ficará vazia.")
+                rels_intermed_list = []
+            if not evals_raw_list:
+                logging.warning(
+                    f"Nenhuma avaliação de dificuldade bruta (batch) encontrada para run_id={run_id}. UCs finais não terão scores de dificuldade calculados nesta etapa.")
+                evals_raw_list = []
+
+            final_ucs_to_save: List[Dict[str, Any]] = []
+            if evals_raw_list:
+                logging.info("Calculando scores finais de dificuldade a partir das avaliações do batch...")
+                final_ucs_to_save, evaluated_count, min_evals_met_count = _calculate_final_difficulty_from_raw(
+                    generated_ucs_raw_list, evals_raw_list
+                )
+                logging.info(
+                    f"Cálculo de dificuldade concluído: {evaluated_count} UCs com score, {min_evals_met_count} atingiram o mínimo de avaliações.")
+            else:
+                logging.info("Nenhuma avaliação de dificuldade encontrada. UCs finais não terão scores de dificuldade.")
+                for uc_raw_dict in generated_ucs_raw_list:
+                    uc_final_dict = uc_raw_dict.copy()
+                    uc_final_dict["difficulty_score"] = None
+                    uc_final_dict["difficulty_justification"] = "Não avaliado"
+                    uc_final_dict["evaluation_count"] = 0
+                    final_ucs_to_save.append(uc_final_dict)
+
+            if not final_ucs_to_save and generated_ucs_raw_list:
+                raise ValueError(
+                    f"Erro inesperado: Lista final de UCs (final_ucs_to_save) vazia após processamento de dificuldade, mas UCs raw existiam para run_id={run_id}.")
+            elif not final_ucs_to_save and not generated_ucs_raw_list:
+                logging.warning(
+                    f"Nenhuma UC gerada (raw) e, portanto, nenhuma UC final para salvar para run_id={run_id}.")
+
+            if final_ucs_to_save:
+                crud_final_ucs.add_final_knowledge_units(db, run_id, final_ucs_to_save)
+                logging.info(f"{len(final_ucs_to_save)} UCs finais adicionadas à sessão do banco.")
+
+            if rels_intermed_list:
+                crud_final_rels.add_final_knowledge_relationships(db, run_id, rels_intermed_list)
+                logging.info(
+                    f"{len(rels_intermed_list)} relações finais (baseadas nas intermediárias) adicionadas à sessão do banco.")
+
+            crud_runs.update_run_status(db, run_id, status='success')
+            logging.info(f"Status do PipelineRun {run_id} definido para 'success' na sessão.")
+
+            db.commit()
+            logging.info("Commit atômico de outputs finais e status do Run bem-sucedido.")
+            logging.info(f"--- LOGIC: finalize_outputs CONCLUÍDA com sucesso (run_id={run_id}) ---")
+
+        except ValueError as ve:
+            logging.error(f"Erro de valor durante finalize_outputs: {ve}", exc_info=True)
+            db.rollback()
+            logging.error(f"--- LOGIC: finalize_outputs FALHOU (Erro de Valor) (run_id={run_id}) ---")
+
+            try:
+                crud_runs.update_run_status(db, run_id, status='finalize_failed'); db.commit()
+            except:
+                logging.error(f"Falha ao tentar atualizar status do run {run_id} para 'finalize_failed'.")
+            raise
+        except Exception as e:
+            logging.error(f"Erro geral durante finalize_outputs: {e}", exc_info=True)
+            db.rollback()
+            logging.error(f"--- LOGIC: finalize_outputs FALHOU (Erro Geral) (run_id={run_id}) ---")
+            try:
+                crud_runs.update_run_status(db, run_id, status='finalize_failed'); db.commit()
+            except:
+                logging.error(f"Falha ao tentar atualizar status do run {run_id} para 'finalize_failed'.")
+            raise
