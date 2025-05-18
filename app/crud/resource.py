@@ -1,7 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-import models
-import schemas
+import app.models as models
 import uuid
 from typing import Optional, List
 from datetime import datetime

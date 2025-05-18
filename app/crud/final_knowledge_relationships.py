@@ -1,8 +1,7 @@
 """CRUD operations for final_knowledge_relationships table."""
 from sqlalchemy.orm import Session
-import models
-from crud.base import add_records
-import logging
+import app.models as models
+from app.crud.base import add_records
 
 def add_final_knowledge_relationships(db: Session, run_id: str, records: list) -> None:
     """Insert final knowledge relationship records for a given pipeline run."""

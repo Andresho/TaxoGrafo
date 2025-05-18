@@ -1,7 +1,7 @@
 """CRUD operations for final_knowledge_units table."""
 from sqlalchemy.orm import Session
-import models
-from crud.base import add_records
+import app.models
+from app.crud.base import add_records
 import logging
 
 def add_final_knowledge_units(db: Session, run_id: str, records: list) -> None:

@@ -60,3 +60,18 @@ REL_TYPE_EXPANDS = "EXPANDS"
 REL_INTERMEDIATE = "knowledge_relationships_intermediate"
 FINAL_UC_FILE = "final_knowledge_units"
 FINAL_REL_FILE = "final_knowledge_relationships"
+
+def get_dirs(run_id: str):
+    """Retorna tupla de paths: base_input, work_dir e batch_dir conforme run_id."""
+    root = Path(AIRFLOW_DATA_DIR) / run_id
+    base_input_for_graphrag = root / 'output'
+    work_dir_for_batches = root / 'pipeline_workdir'
+    batch_files_dir = work_dir_for_batches / 'batch_files'
+
+    s1 = work_dir_for_batches / '1_origins'
+    s2 = work_dir_for_batches / '2_generated_ucs'
+    s3 = work_dir_for_batches / '3_relationships'
+    s4 = work_dir_for_batches / '4_difficulty_evals'
+    s5 = work_dir_for_batches / '5_final_outputs'
+
+    return base_input_for_graphrag, work_dir_for_batches, batch_files_dir, s1, s2, s3, s4, s5

@@ -2,22 +2,30 @@
 Entry point for the Pipeline API server.
 """
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Path as FastAPIPath
-import scripts.pipeline_tasks as pt
-import scripts.batch_utils as batch_utils
-from scripts.llm_client import get_llm_strategy
-from db import SessionLocal, get_session, get_db
+
+from app.scripts.pipeline_stages.task_define_relationships import task_define_relationships
+from app.scripts.pipeline_stages.task_finalize_outputs import task_finalize_outputs
+from app.scripts.pipeline_stages.task_prepare_origins import task_prepare_origins
+from app.scripts.pipeline_stages.task_process_difficulty_batch import task_process_difficulty_batch
+from app.scripts.pipeline_stages.task_process_uc_generation_batch import task_process_uc_generation_batch
+from app.scripts.pipeline_stages.task_submit_difficulty_batch import task_submit_difficulty_batch
+from app.scripts.pipeline_stages.task_submit_uc_generation_batch import task_submit_uc_generation_batch
+
+import app.scripts.batch_utils as batch_utils
+from app.scripts.llm_client import get_llm_strategy
+from app.db import get_session, get_db
 from sqlalchemy.orm import Session
-import crud.pipeline_run as crud_runs
-import gets
+import app.crud.pipeline_run as crud_runs
+import app.gets as gets
 import os
 from pathlib import Path
 import shutil
 import requests
 import time
-import schemas
-import crud.resource as crud_resource
-import crud.pipeline_run_resource as crud_pipeline_run_resource
-import crud.pipeline_batch_job as crud_batch_jobs
+import app.schemas as schemas
+import app.crud.resource as crud_resource
+import app.crud.pipeline_run_resource as crud_pipeline_run_resource
+import app.crud.pipeline_batch_job as crud_batch_jobs
 import uuid
 import logging
 
@@ -49,7 +57,7 @@ async def health_check():
 def prepare_origins(run_id: str):
     """Endpoint para executar task_prepare_origins em contexto de run_id."""
     try:
-        pt.task_prepare_origins(run_id)
+        task_prepare_origins(run_id)
         return {"status": "success", "run_id": run_id, "message": "Origins prepared"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -105,11 +113,11 @@ def submit_llm_batch(
     try:
         if batch_type == BATCH_TYPE_UC_GENERATION:
             logging.info(f"Submitting UC generation batch for job_id: {job_record.id}")
-            llm_batch_id_from_provider = pt.task_submit_uc_generation_batch(run_id) 
+            llm_batch_id_from_provider = task_submit_uc_generation_batch(run_id)
                                                                       
         elif batch_type == BATCH_TYPE_DIFFICULTY_ASSESSMENT:
             logging.info(f"Submitting difficulty assessment batch for job_id: {job_record.id}")
-            llm_batch_id_from_provider = pt.task_submit_difficulty_batch(run_id)
+            llm_batch_id_from_provider = task_submit_difficulty_batch(run_id)
 
         if not llm_batch_id_from_provider:
             if job_record.status == crud_batch_jobs.STATUS_PENDING_SUBMISSION: # Ainda pendente, mas nada foi submetido
@@ -171,7 +179,7 @@ def submit_llm_batch(
 def define_relationships(run_id: str):
     """Endpoint para executar task_define_relationships em contexto de run_id."""
     try:
-        pt.task_define_relationships(run_id)
+        task_define_relationships(run_id)
         return {"status": "success", "run_id": run_id, "message": "Relationships defined"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -340,13 +348,13 @@ def process_llm_batch_results(
             logging.info(
                 f"Processing UC generation results for job_id {job_record.id} (LLM ID: {job_record.llm_batch_id})")
 
-            processing_successful = pt.task_process_uc_generation_batch(run_id, job_record.llm_batch_id,
+            processing_successful = task_process_uc_generation_batch(run_id, job_record.llm_batch_id,
                                                                         db_session_from_api=db)
 
         elif batch_type == BATCH_TYPE_DIFFICULTY_ASSESSMENT:
             logging.info(
                 f"Processing difficulty assessment results for job_id {job_record.id} (LLM ID: {job_record.llm_batch_id})")
-            processing_successful = pt.task_process_difficulty_batch(run_id, job_record.llm_batch_id,
+            processing_successful = task_process_difficulty_batch(run_id, job_record.llm_batch_id,
                                                                      db_session_from_api=db)
 
         if processing_successful:
@@ -392,7 +400,7 @@ def process_llm_batch_results(
 def finalize_outputs(run_id: str):
     """Endpoint para executar task_finalize_outputs em contexto de run_id."""
     try:
-        pt.task_finalize_outputs(run_id)
+        task_finalize_outputs(run_id)
 
         with get_session() as db:
             crud_runs.update_run_status(db, run_id, status='success')

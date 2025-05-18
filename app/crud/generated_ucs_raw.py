@@ -1,8 +1,7 @@
 """CRUD operations for generated_ucs_raw table."""
 from sqlalchemy.orm import Session
-import models
-from crud.base import add_records
-import logging
+import app.models as models
+from app.crud.base import add_records
 
 def add_generated_ucs_raw(db: Session, run_id: str, records: list) -> None:
     """Insert generated UC raw records for a given pipeline run."""

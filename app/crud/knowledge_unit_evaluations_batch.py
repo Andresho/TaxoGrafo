@@ -1,7 +1,7 @@
 """CRUD operations for knowledge_unit_evaluations_aggregated_batch table."""
 from sqlalchemy.orm import Session
-import models
-from crud.base import add_records
+import app.models as models
+from app.crud.base import add_records
 
 def add_knowledge_unit_evaluations_batch(db: Session, run_id: str, records: list) -> None:
     """Insert knowledge unit evaluation records for a given pipeline run."""

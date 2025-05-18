@@ -1,7 +1,7 @@
 """CRUD operations for knowledge_relationships_intermediate table."""
 from sqlalchemy.orm import Session
-import models
-from crud.base import add_records
+import app.models as models
+from app.crud.base import add_records
 
 def add_knowledge_relationships_intermediate(db: Session, run_id: str, records: list) -> None:
     """Insert intermediate knowledge relationships for a given pipeline run."""

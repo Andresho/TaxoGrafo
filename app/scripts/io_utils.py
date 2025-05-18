@@ -1,7 +1,7 @@
 import pandas as pd
 from pathlib import Path
 from typing import Optional
-from scripts.data_lake import DataLake
+from app.scripts.data_lake import DataLake
 
 def save_dataframe(df: pd.DataFrame, stage_dir: Path, filename: str):
     """Salva um DataFrame em formato Parquet no diretório do estágio via DataLake."""

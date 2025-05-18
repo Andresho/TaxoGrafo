@@ -4,7 +4,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-import models
+import app.models as models
 
 
 def get_run(db: Session, run_id: str) -> Optional[models.PipelineRun]:

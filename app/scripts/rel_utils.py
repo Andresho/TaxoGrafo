@@ -3,7 +3,7 @@ import logging
 from typing import List, Dict, Any
 from collections import defaultdict
 
-from scripts.constants import BLOOM_ORDER, BLOOM_ORDER_MAP
+from app.scripts.constants import BLOOM_ORDER, BLOOM_ORDER_MAP
 
 def _prepare_expands_lookups(
     entities_df: pd.DataFrame,

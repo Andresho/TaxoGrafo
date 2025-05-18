@@ -6,7 +6,9 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 
 # ensure `app` package is on PYTHONPATH
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+#sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+PROJECT_ROOT_FOR_ALEMBIC = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, PROJECT_ROOT_FOR_ALEMBIC)
 
 # this is the Alembic Config object
 config = context.config
@@ -16,9 +18,9 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # import Base and DATABASE_URL
-from db import DATABASE_URL, Base
+from app.db import DATABASE_URL, Base
 # ensure models are imported so metadata is populated
-import models  # noqa: F401
+import app.models as models # noqa: F401
 
 target_metadata = Base.metadata
 

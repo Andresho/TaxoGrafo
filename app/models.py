@@ -4,7 +4,7 @@ from sqlalchemy.orm import relationship
 import uuid
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
-from db import Base
+from app.db import Base
 
 
 class PipelineRun(Base):

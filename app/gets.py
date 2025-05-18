@@ -3,10 +3,10 @@ from sqlalchemy.orm import Session
 from typing import List, Optional, Set
 from sqlalchemy import or_
 
-import crud
-import models
-import schemas
-from db import get_db
+import app.crud as crud
+import app.models as models
+import app.schemas as schemas
+from app.db import get_db
 
 router = APIRouter(
     prefix="/api/v1",

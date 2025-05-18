@@ -1,13 +1,13 @@
 import logging
 import json
 import uuid
-from scripts.llm_client import get_llm_strategy
+from app.scripts.llm_client import get_llm_strategy
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Tuple, Optional
 from sqlalchemy.orm import Session
-from crud.generated_ucs_raw import add_generated_ucs_raw
-from crud.knowledge_unit_evaluations_batch import add_knowledge_unit_evaluations_batch
-from scripts.constants import GENERATED_UCS_RAW, UC_EVALUATIONS_RAW
+from app.crud.generated_ucs_raw import add_generated_ucs_raw
+from app.crud.knowledge_unit_evaluations_batch import add_knowledge_unit_evaluations_batch
+from app.scripts.constants import GENERATED_UCS_RAW, UC_EVALUATIONS_RAW
 
 
 def check_batch_status(batch_id: str) -> Tuple[str, Optional[str], Optional[str]]:

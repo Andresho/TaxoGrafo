@@ -3,8 +3,8 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any
 from collections import defaultdict
 
-from scripts.constants import BLOOM_ORDER_MAP, BASE_INPUT_DIR, GENERATED_UCS_RAW, REL_INTERMEDIATE
-from scripts.rel_utils import _add_relationships_avoiding_duplicates, _prepare_expands_lookups, _create_expands_links
+from app.scripts.constants import BLOOM_ORDER_MAP, BASE_INPUT_DIR, GENERATED_UCS_RAW, REL_INTERMEDIATE
+from app.scripts.rel_utils import _add_relationships_avoiding_duplicates, _prepare_expands_lookups, _create_expands_links
 
 class RelationBuilder(ABC):
     """Interface e pipeline para construir relações entre UCs."""
