@@ -38,7 +38,7 @@ def task_process_uc_generation_batch(run_id: str, llm_batch_id: str,
                 output_file_id=output_file_id,
                 error_file_id=error_file_id,
                 stage_output_dir=s2_dir_for_run,
-                output_filename=GENERATED_UCS_RAW,
+                output_filename_key=GENERATED_UCS_RAW,
                 run_id=run_id,
                 db=db
             )

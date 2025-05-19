@@ -37,7 +37,7 @@ def task_process_difficulty_batch(run_id: str, llm_batch_id: str,
                 output_file_id=output_file_id,
                 error_file_id=error_file_id,
                 stage_output_dir=s4_dir_for_run,
-                output_filename=UC_EVALUATIONS_RAW,
+                output_filename_key=UC_EVALUATIONS_RAW,
                 run_id=run_id,
                 db=db
             )
