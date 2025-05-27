@@ -1,0 +1,24 @@
+---
+config:
+  look: classic
+  layout: fixed
+  theme: neutral
+---
+flowchart TD
+    A["Início: Formar Grupos de Comparação para Avaliação de Dificuldade"] --> B@{ label: "1: Inicializar: <br> - Lista de todas as 'Origens de Conhecimento' <br> - Contagem de quantas vezes cada Origem já foi comparada (inicialmente 0)" }
+    B --> C{"Ainda existem Origens precisando de mais comparações?"}
+    C -- Sim --> D@{ label: "2: Selecionar 'Origem Principal' (Seed): <br> Aquela que foi comparada menos vezes" }
+    D --> E@{ label: "3: Encontrar 'Origens Vizinhas' para Comparação: <br> - Buscar vizinhas próximas na hierarquia do conhecimento (mesmo tipo/nível da Seed). <br> - Se não encontrar o suficiente, buscar vizinhas mais distantes ou globais (mesmo tipo/nível). <br> - Priorizar vizinhas que também foram pouco comparadas." }
+    E --> F{"Conseguiu um grupo com o tamanho ideal <br> (Origem Principal + Vizinhos)?"}
+    F -- Sim --> G@{ label: "4: Registrar Grupo para Avaliação: <br> - Lista das Origens no grupo. <br> - Indicar quão 'próximas' as Origens são (Nível de Coerência)." }
+    G --> H["5: Atualizar Contagem de Comparações: <br> Para todas as Origens que participaram deste grupo."]
+    H --> C
+    F -- Não (Origem Principal não formou grupo completo) --> I@{ label: "Aumentar contagem de 'tentativas de comparação' da Origem Principal." }
+    I --> C
+    C -- Não --> J@{ label: "Fim: Lista de 'Grupos de Comparação' está pronta. <br> (Estes grupos serão usados para criar os pedidos de avaliação ao LLM)" }
+    B@{ shape: rect}
+    D@{ shape: rect}
+    E@{ shape: rect}
+    G@{ shape: rect}
+    I@{ shape: rect}
+    J@{ shape: rect}

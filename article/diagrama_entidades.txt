@@ -1,0 +1,135 @@
+---
+config:
+  theme: redux-color
+---
+erDiagram
+    PipelineRun {
+        string run_id PK
+        timestamp started_at
+        timestamp finished_at
+        string status
+    }
+    Resource {
+        uuid resource_id PK
+        text original_filename
+        string status
+    }
+    PipelineRunResource {
+        string run_id PK
+        uuid resource_id PK
+    }
+    PipelineBatchJob {
+        integer id PK
+        string pipeline_run_id
+        string batch_type
+        string llm_batch_id
+        string status
+    }
+    GraphragCommunity {
+        string id PK
+        string pipeline_run_id
+        string title
+        integer level
+        string parent_community_id "Ref. GraphragCommunity.id (lógica)"
+    }
+    GraphragEntity {
+        string id PK
+        string pipeline_run_id
+        string title
+        string type
+        string parent_community_id "Ref. GraphragCommunity.id"
+    }
+    GraphragCommunityReport {
+        string id PK
+        string pipeline_run_id
+        integer community "Ref. GraphragCommunity.hr_id"
+        string title
+    }
+    GraphragRelationship {
+        string id PK
+        string pipeline_run_id
+        string source "Ref. GraphragEntity.id"
+        string target "Ref. GraphragEntity.id"
+    }
+    GraphragDocument {
+        string id PK
+        string pipeline_run_id
+        string title
+    }
+    GraphragTextUnit {
+        string id PK
+        string pipeline_run_id
+        text text_content
+    }
+    KnowledgeUnitOrigin {
+        string pipeline_run_id PK
+        string origin_id PK
+        string origin_type
+        text title
+        integer level
+    }
+    GeneratedUcsRaw {
+        string pipeline_run_id PK
+        string uc_id PK
+        string origin_id
+        string bloom_level
+    }
+    DifficultyComparisonGroup {
+        string pipeline_run_id PK
+        string comparison_group_id PK
+        string bloom_level
+        string coherence_level
+    }
+    difficulty_group_origin_association {
+        string pipeline_run_id PK
+        string comparison_group_id PK
+        string origin_id PK
+        boolean is_seed_origin
+    }
+    KnowledgeUnitEvaluationsAggregatedBatch {
+        string pipeline_run_id PK
+        string knowledge_unit_id PK
+        string comparison_group_id PK
+        integer difficulty_score
+    }
+    FinalKnowledgeUnit {
+        string pipeline_run_id PK
+        string uc_id PK
+        string origin_id
+        integer difficulty_score
+    }
+    FinalKnowledgeRelationship {
+        string pipeline_run_id PK
+        string source_uc_id PK
+        string target_uc_id PK
+        string type
+    }
+    PipelineRun ||--o{ PipelineRunResource : "tem_run_resource"
+    Resource ||--o{ PipelineRunResource : "é_recurso_para"
+    PipelineRun ||--o{ PipelineBatchJob : "tem_job"
+    PipelineRun ||--o{ GraphragCommunity : "gera_gr_community"
+    PipelineRun ||--o{ GraphragEntity : "gera_gr_entity"
+    PipelineRun ||--o{ GraphragCommunityReport : "gera_gr_report"
+    PipelineRun ||--o{ GraphragRelationship : "gera_gr_relation"
+    PipelineRun ||--o{ GraphragDocument : "gera_gr_document"
+    PipelineRun ||--o{ GraphragTextUnit : "gera_gr_text_unit"
+    GraphragCommunity }o--o{ GraphragEntity : "agrupa_ent"
+    GraphragCommunityReport }o..|| GraphragCommunity : "reporta_comun"
+    GraphragRelationship }o..|| GraphragEntity : "origem_ent"
+    GraphragRelationship }o..|| GraphragEntity : "alvo_ent"
+    PipelineRun ||--o{ KnowledgeUnitOrigin : "tem_ku_origin"
+    KnowledgeUnitOrigin }o..|| GraphragEntity : "origem_de_ent"
+    KnowledgeUnitOrigin }o..|| GraphragCommunity : "origem_de_comun"
+    KnowledgeUnitOrigin ||--o{ GeneratedUcsRaw : "origina_uc_raw"
+    PipelineRun ||--o{ DifficultyComparisonGroup : "tem_diff_group"
+    DifficultyComparisonGroup ||--o{ difficulty_group_origin_association : "associa_origem"
+    KnowledgeUnitOrigin ||--o{ difficulty_group_origin_association : "em_diff_group"
+    DifficultyComparisonGroup ||--o{ KnowledgeUnitEvaluationsAggregatedBatch : "avaliado_em"
+    GeneratedUcsRaw ||..o{ KnowledgeUnitEvaluationsAggregatedBatch : "uc_avaliada_batch"
+    PipelineRun ||--o{ FinalKnowledgeUnit : "tem_uc_final"
+    GeneratedUcsRaw ||--|| FinalKnowledgeUnit : "gera_final"
+    KnowledgeUnitOrigin ||--o{ FinalKnowledgeUnit : "origina_uc_final"
+    PipelineRun ||--o{ FinalKnowledgeRelationship : "tem_rel_final"
+    FinalKnowledgeUnit }o--o{ FinalKnowledgeRelationship : "rel_de_origem_uc"
+    FinalKnowledgeUnit }o--o{ FinalKnowledgeRelationship : "rel_de_alvo_uc"
+    KnowledgeUnitOrigin ||--o{ FinalKnowledgeRelationship : "contexto_rel_final"
