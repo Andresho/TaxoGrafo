@@ -1,0 +1,55 @@
+sequenceDiagram
+    participant User_or_Airflow as "Usuário/Airflow Task"
+    participant PipelineAPI as "Pipeline API"
+    participant DB as "Banco de Dados <br/> (PipelineBatchJob)"
+    participant LLMProvider as "Provedor LLM <br/> (OpenAI Batch API)"
+
+    note over User_or_Airflow, LLMProvider: Continuação da Parte 1: <br/> Batch LLM concluído (status interno: PENDING_PROCESSING). <br/> (Se o LLM demorasse mais, o polling continuaria <br/> até este ponto ou até falha/timeout).
+
+    %% --- Processamento dos Resultados ---
+    User_or_Airflow ->> PipelineAPI: POST /pipeline/{run_id}/process-batch-results/{batch_type}
+    activate PipelineAPI
+
+    PipelineAPI ->> DB: get_pipeline_batch_job()
+    activate DB
+    DB -->> PipelineAPI: job_record (status: PENDING_PROCESSING, com llm_batch_id, output_file_id)
+    deactivate DB
+
+    alt Job já COMPLETED (Idempotência)
+        PipelineAPI -->> User_or_Airflow: Resposta (Skipped, já processado)
+    else Job PENDING_PROCESSING
+        PipelineAPI ->> DB: update_pipeline_batch_job(job_id, status=PROCESSING)
+        activate DB
+        DB -->> PipelineAPI: Job Atualizado
+        deactivate DB
+
+        note over PipelineAPI, LLMProvider: Pipeline API agora baixa os arquivos de resultado.
+
+        PipelineAPI ->> LLMProvider: Read File (com output_file_id)
+        activate LLMProvider
+        LLMProvider -->> PipelineAPI: Conteúdo do Arquivo de Resultados
+        deactivate LLMProvider
+
+        opt Se error_file_id existir (obtido durante o polling)
+            PipelineAPI ->> LLMProvider: Read File (com error_file_id)
+            activate LLMProvider
+            LLMProvider -->> PipelineAPI: Conteúdo do Arquivo de Erros
+            deactivate LLMProvider
+        end
+
+        PipelineAPI ->> PipelineAPI: batch_utils.process_batch_results() <br/> (Parseia resultados, Prepara dados para o BD)
+        
+        PipelineAPI ->> DB: Salva dados processados (ex: generated_ucs_raw)
+        activate DB
+        DB -->> PipelineAPI: Confirmação
+        deactivate DB
+
+        PipelineAPI ->> DB: update_pipeline_batch_job(job_id, status=COMPLETED)
+        activate DB
+        DB -->> PipelineAPI: Job Atualizado
+        deactivate DB
+        PipelineAPI -->> User_or_Airflow: Resposta (Sucesso, resultados processados)
+    else Job com status inesperado (ex: SUBMISSION_FAILED após polling)
+        PipelineAPI -->> User_or_Airflow: Resposta (Erro, status não permite processamento)
+    end
+    deactivate PipelineAPI

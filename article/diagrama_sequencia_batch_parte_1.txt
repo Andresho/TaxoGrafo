@@ -1,0 +1,53 @@
+---
+config:
+  theme: base
+---
+sequenceDiagram
+    participant User_or_Airflow as "Usuário/Airflow Task"
+    participant PipelineAPI as "Pipeline API"
+    participant DB as "Banco de Dados <br/> (PipelineBatchJob)"
+    participant LLMProvider as "Provedor LLM <br/> (OpenAI Batch API)"
+    User_or_Airflow ->> PipelineAPI: POST /pipeline/{run_id}/submit-batch/{batch_type}
+    activate PipelineAPI
+    PipelineAPI ->> DB: create_or_get_pipeline_batch_job()
+    activate DB
+    DB -->> PipelineAPI: job_record (status: PENDING_SUBMISSION ou existente)
+    deactivate DB
+    alt Job já SUBMITTED ou COMPLETED
+        PipelineAPI -->> User_or_Airflow: Resposta (Skipped, Batch ID existente)
+    else Job PENDING_SUBMISSION (ou resetado)
+        PipelineAPI ->> PipelineAPI: task_submit_{batch_type}_batch() <br/> (Prepara requests, formata arquivo .jsonl)
+        PipelineAPI ->> LLMProvider: Upload arquivo .jsonl
+        activate LLMProvider
+        LLMProvider -->> PipelineAPI: provider_file_id
+        deactivate LLMProvider
+        PipelineAPI ->> LLMProvider: Create Batch Job (com provider_file_id)
+        activate LLMProvider
+        LLMProvider -->> PipelineAPI: llm_batch_id
+        deactivate LLMProvider
+        PipelineAPI ->> DB: update_pipeline_batch_job(job_id, status=SUBMITTED, llm_batch_id)
+        activate DB
+        DB -->> PipelineAPI: Job Atualizado
+        deactivate DB
+        PipelineAPI -->> User_or_Airflow: Resposta (Submetido, llm_batch_id)
+    end
+    deactivate PipelineAPI
+    note over User_or_Airflow, LLMProvider: Airflow inicia o polling do status do batch...
+    User_or_Airflow ->> PipelineAPI: GET /pipeline/{run_id}/batch-job-status/{batch_type} (Polling)
+    activate PipelineAPI
+    PipelineAPI ->> DB: get_pipeline_batch_job()
+    activate DB
+    DB -->> PipelineAPI: job_record (com llm_batch_id, status: SUBMITTED)
+    deactivate DB
+    PipelineAPI ->> LLMProvider: Get Batch Status (com llm_batch_id)
+    activate LLMProvider
+    LLMProvider -->> PipelineAPI: llm_status="completed", output_file_id, error_file_id
+    deactivate LLMProvider
+    note right of LLMProvider: Exemplo: LLM completou na primeira verificação.
+    PipelineAPI ->> DB: update_pipeline_batch_job(job_id, status=PENDING_PROCESSING)
+    activate DB
+    DB -->> PipelineAPI: Job Atualizado
+    deactivate DB
+    PipelineAPI -->> User_or_Airflow: Resposta (llm_status: completed) # Para o HttpSensor
+    deactivate PipelineAPI
+    note right of LLMProvider: Continua na Parte 2: Processamento dos Resultados...

@@ -1,7 +1,7 @@
 FROM python:3.10-slim
 
 RUN apt-get update && apt-get install -y git rsync \
-    && git clone https://github.com/microsoft/graphrag.git /graphrag \
+    && git clone --branch v2.2.1 https://github.com/microsoft/graphrag.git /graphrag \
     && pip install --no-cache-dir /graphrag \
     && rm -rf /var/lib/apt/lists/*
 

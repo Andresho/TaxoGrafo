@@ -1,36 +1,13 @@
+---
+config:
+  theme: base
+---
 graph TD
-    Z_INICIO[... Continuação do Diagrama de Fluxo - Parte 1] --> I[Task: define_relationships];
-
-    I -- Chama API /pipeline/{run_id}/define-relationships --> I_API_LOGIC["Pipeline API: task_define_relationships <br/> (Constrói REQUIRES/EXPANDS, <br/>Salva em knowledge_relationships_intermediate BD)"];
-    I_API_LOGIC --> J[Task: submit_difficulty_batch];
-
-    J -- Chama API /pipeline/{run_id}/submit-batch/difficulty_assessment --> J_API_LOGIC["Pipeline API: task_submit_difficulty_batch <br/> (Agenda Comparações, Cria DifficultyComparisonGroups, <br/>Formata requests, Submete Batch LLM)"];
-    J_API_LOGIC --> K["Task: wait_difficulty_batch_completion <br/> (HttpSensor)"];
-    K -- Sonda API /pipeline/{run_id}/batch-job-status/difficulty_assessment --> K_API_STATUS_CHECK["Pipeline API: get_llm_batch_job_status <br/> (Consulta Provedor LLM, Atualiza PipelineBatchJob BD)"];
-    K_API_STATUS_CHECK -- Batch Concluído --> L[Task: process_difficulty_batch_results];
-    K_API_STATUS_CHECK -- Batch Falhou/Pendente --> K;
-
-    L -- Chama API /pipeline/{run_id}/process-batch-results/difficulty_assessment --> L_API_LOGIC["Pipeline API: task_process_difficulty_batch <br/> (Baixa resultados LLM, Parseia, <br/>Salva em knowledge_unit_evaluations_aggregated_batch BD)"];
-    L_API_LOGIC --> M[Task: finalize_outputs];
-
-    M -- Chama API /pipeline/{run_id}/finalize-outputs --> M_API_LOGIC["Pipeline API: task_finalize_outputs <br/> (Agrega scores, Salva UCs/Rels Finais, <br/>Atualiza status PipelineRun)"];
-    M_API_LOGIC --> N[End: Pipeline Concluído];
-
-    %% Estilização para clareza
-    style Z_INICIO fill:#dddddd,stroke:#333,stroke-width:2px,color:black,stroke-dasharray: 5 5
-    style N fill:#cc0000,stroke:#333,stroke-width:2px,color:white
-    
-    style I fill:#lightyellow,stroke:#333,stroke-width:1px
-    style J fill:#lightyellow,stroke:#333,stroke-width:1px
-    style K fill:#lightyellow,stroke:#333,stroke-width:1px
-    style L fill:#lightyellow,stroke:#333,stroke-width:1px
-    style M fill:#lightyellow,stroke:#333,stroke-width:1px
-
-    style I_API_LOGIC fill:#e6f2ff,stroke:#333,stroke-width:1px,rx:5,ry:5
-    style J_API_LOGIC fill:#e6f2ff,stroke:#333,stroke-width:1px,rx:5,ry:5
-    style K_API_STATUS_CHECK fill:#e6f2ff,stroke:#333,stroke-width:1px,rx:5,ry:5
-    style L_API_LOGIC fill:#e6f2ff,stroke:#333,stroke-width:1px,rx:5,ry:5
-    style M_API_LOGIC fill:#e6f2ff,stroke:#333,stroke-width:1px,rx:5,ry:5
-
-    classDef airflowTask fill:#fff2cc,stroke:#D6B656,stroke-width:2px;
-    class I,J,K,L,M airflowTask;
+    Z_INICIO_PARTE_2[... Continuação do Diagrama de Fluxo - Parte 1] --> F[Task: submit_generation_batch];
+    F -- Chama API /pipeline/{run_id}/submit-batch/uc_generation --> F_API_LOGIC["Pipeline API: task_submit_uc_generation_batch <br/> (Seleciona Origins, Formata requests, Cria PipelineBatchJob, Submete Batch LLM)"];
+    F_API_LOGIC --> G["Task: wait_generation_batch_completion <br/> (HttpSensor)"];
+    G -- Sonda API /pipeline/{run_id}/batch-job-status/uc_generation --> G_API_STATUS_CHECK["Pipeline API: get_llm_batch_job_status <br/> (Consulta Provedor LLM, Atualiza PipelineBatchJob BD)"];
+    G_API_STATUS_CHECK -- Batch Concluído --> H[Task: process_generation_batch_results];
+    G_API_STATUS_CHECK -- Batch Falhou/Pendente --> G;
+    H -- Chama API /pipeline/{run_id}/process-batch-results/uc_generation --> H_API_LOGIC["Pipeline API: task_process_uc_generation_batch <br/> (Baixa resultados LLM, Parseia, Salva em generated_ucs_raw BD)"];
+    H_API_LOGIC --> Z_CONTINUA_PARTE_3[Continua no Diagrama de Fluxo - Parte 3 ...];

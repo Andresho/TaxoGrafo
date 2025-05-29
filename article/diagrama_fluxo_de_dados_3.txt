@@ -1,0 +1,40 @@
+sequenceDiagram
+    participant User_or_Airflow as "Usuário/Airflow Task"
+    participant PipelineAPI as "Pipeline API"
+    participant DB as "Banco de Dados <br/> (PipelineBatchJob)"
+    participant LLMProvider as "Provedor LLM <br/> (OpenAI Batch API)"
+
+    User_or_Airflow ->> PipelineAPI: POST /pipeline/{run_id}/submit-batch/{batch_type}
+    activate PipelineAPI
+
+    PipelineAPI ->> DB: create_or_get_pipeline_batch_job()
+    activate DB
+    DB -->> PipelineAPI: job_record (status: PENDING_SUBMISSION ou existente)
+    deactivate DB
+
+    alt Job já SUBMITTED ou COMPLETED
+        PipelineAPI -->> User_or_Airflow: Resposta (Skipped, Batch ID existente)
+    else Job PENDING_SUBMISSION (ou resetado)
+        note over PipelineAPI: task_submit_{batch_type}_batch()
+        PipelineAPI ->> PipelineAPI: Prepara requests, formata arquivo .jsonl
+        PipelineAPI ->> LLMProvider: Upload arquivo .jsonl
+        activate LLMProvider
+        LLMProvider -->> PipelineAPI: provider_file_id
+        deactivate LLMProvider
+
+        PipelineAPI ->> LLMProvider: Create Batch Job (com provider_file_id)
+        activate LLMProvider
+        LLMProvider -->> PipelineAPI: llm_batch_id
+        deactivate LLMProvider
+
+        PipelineAPI ->> DB: update_pipeline_batch_job(job_id, status=SUBMITTED, llm_batch_id)
+        activate DB
+        DB -->> PipelineAPI: Job Atualizado
+        deactivate DB
+        PipelineAPI -->> User_or_Airflow: Resposta (Submetido, llm_batch_id)
+    end
+    deactivate PipelineAPI
+
+    rect rgba(200, 200, 200, .1)
+        note right of User_or_Airflow: Continua na Parte 2: Monitoramento e Processamento...
+    end

@@ -1,41 +1,12 @@
+---
+config:
+  theme: base
+---
 graph TD
     A[Start: Iniciar Pipeline Run via API] --> B(Task: prepare_input_files);
     B -- Chama API para preparar inputs --> B_API_LOGIC["Pipeline API: Lógica de _prepare_input_files_callable <br/> (Converte PDFs, organiza TXTs no Volume Compartilhado)"];
-    
     B_API_LOGIC --> D["Task: graphrag_index <br/> (Executa Contêiner GraphRAG)"];
     D -- Lê TXTs, Escreve Parquets (no Volume) --> D_GRAPHRAG_PROCESS["Contêiner GraphRAG: Processamento"];
     D_GRAPHRAG_PROCESS --> E[Task: prepare_origins];
-
     E -- Chama API /pipeline/{run_id}/prepare-origins --> E_API_LOGIC["Pipeline API: task_prepare_origins <br/> (Lê Parquets, Ingestão BD, Cria KnowledgeUnitOrigins)"];
-    E_API_LOGIC --> F[Task: submit_generation_batch];
-
-    F -- Chama API /pipeline/{run_id}/submit-batch/uc_generation --> F_API_LOGIC["Pipeline API: task_submit_uc_generation_batch <br/> (Seleciona Origins, Formata requests, Cria PipelineBatchJob, Submete Batch LLM)"];
-    F_API_LOGIC --> G["Task: wait_generation_batch_completion <br/> (HttpSensor)"];
-    G -- Sonda API /pipeline/{run_id}/batch-job-status/uc_generation --> G_API_STATUS_CHECK["Pipeline API: get_llm_batch_job_status <br/> (Consulta Provedor LLM, Atualiza PipelineBatchJob BD)"];
-    G_API_STATUS_CHECK -- Batch Concluído --> H[Task: process_generation_batch_results];
-    G_API_STATUS_CHECK -- Batch Falhou/Pendente --> G;
-
-    H -- Chama API /pipeline/{run_id}/process-batch-results/uc_generation --> H_API_LOGIC["Pipeline API: task_process_uc_generation_batch <br/> (Baixa resultados LLM, Parseia, Salva em generated_ucs_raw BD)"];
-    
-    H_API_LOGIC --> Z_CONTINUA[Continua no Diagrama de Fluxo - Parte 2 ...];
-
-    %% Estilização para clareza
-    style A fill:#22aa22,stroke:#333,stroke-width:2px,color:white
-    style Z_CONTINUA fill:#dddddd,stroke:#333,stroke-width:2px,color:black,stroke-dasharray: 5 5
-
-    style B fill:#lightyellow,stroke:#333,stroke-width:1px
-    style D fill:#lightyellow,stroke:#333,stroke-width:1px
-    style E fill:#lightyellow,stroke:#333,stroke-width:1px
-    style F fill:#lightyellow,stroke:#333,stroke-width:1px
-    style G fill:#lightyellow,stroke:#333,stroke-width:1px
-    style H fill:#lightyellow,stroke:#333,stroke-width:1px
-
-    style B_API_LOGIC fill:#e6f2ff,stroke:#333,stroke-width:1px,rx:5,ry:5
-    style D_GRAPHRAG_PROCESS fill:#e6ffe6,stroke:#333,stroke-width:1px,rx:5,ry:5
-    style E_API_LOGIC fill:#e6f2ff,stroke:#333,stroke-width:1px,rx:5,ry:5
-    style F_API_LOGIC fill:#e6f2ff,stroke:#333,stroke-width:1px,rx:5,ry:5
-    style G_API_STATUS_CHECK fill:#e6f2ff,stroke:#333,stroke-width:1px,rx:5,ry:5
-    style H_API_LOGIC fill:#e6f2ff,stroke:#333,stroke-width:1px,rx:5,ry:5
-
-    classDef airflowTask fill:#fff2cc,stroke:#D6B656,stroke-width:2px;
-    class B,D,E,F,G,H airflowTask;
+    E_API_LOGIC --> Z_CONTINUA_PARTE_2[Continua no Diagrama de Fluxo - Parte 2 ...];

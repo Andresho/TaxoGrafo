@@ -1,0 +1,664 @@
+%
+% Exemplo LaTeX de monografia UNISINOS
+%
+% Elaborado com base nas orientações dadas no documento
+% ``GUIA PARA ELABORAÇÃO DE TRABALHOS ACADÊMICOS''
+% disponível no site da biblioteca da Unisinos.
+% http://www.unisinos.br/biblioteca
+%
+% Os elementos textuais abaixo são apresentados na ordem em que devem
+% aparecer no documento.  Repare que nem todos são obrigatórios - isso
+% é devidamente indicado em cada caso.
+%
+% Comentários abaixo colocados entre aspas (`` '') foram
+% extraídos diretamente do documento da biblioteca.
+%
+% Este documento é de domínio público.
+%
+
+%=======================================================================
+% Declarações iniciais identificando a classe de documento e
+% selecionando alguns pacotes adicionais.
+%
+% As opções disponíveis (separe-as com vírgulas, sem espaço) são:
+% - twoside: Formata o documento para impressão frente-e-verso
+%   (o default é somente-frente)
+% - english,brazilian,french,german,etc.: idiomas usados no documento.
+%   Deve ser colocado por último o idioma principal.
+%=======================================================================
+\documentclass[twoside,english,brazilian]{UNISINOSmonografia}
+\usepackage[utf8]{inputenc} % charset do texto (utf8, latin1, etc.)
+\usepackage[T1]{fontenc} % encoding da fonte (afeta a sep. de sílabas)
+\usepackage{graphicx} % comandos para gráficos e inclusão de figuras
+\usepackage{bibentry} % para inserir refs. bib. no meio do texto
+\usepackage{longtable}
+\usepackage[list=no]{caption} % Impede que a segunda tabela seja listada
+\usepackage{makecell}
+
+
+
+%=======================================================================
+% Escolha do sistema para geração de referências bibliográficas.
+%
+% O default é usar o estilo unisinos.bst.  Comente a definição abaixo
+% e descomente a linha seguinte para usar o estilo do ABNTeX (é
+% necessário ter esse pacote instalado).
+%
+% A vantagem do unisinos.bst é que ele permite o uso de um arquivo .bib
+% seguindo as orientações tradicionais do BibTeX (veja essas orientações
+% em http://ctan.tug.org/tex-archive/biblio/bibtex/contrib/doc/btxdoc.pdf).
+% Entretanto, o estilo não suporta algumas citações mais exóticas como
+% apud.  Para isso, use o ABNTeX, mas esteja ciente de que muitas de
+% suas referências serão incompatíveis com os estilos tradicionais do
+% BibTeX como plain, alpha, ieeetr, entre outros.
+%=======================================================================
+\usepackage[alf]{abntex2cite}
+%\usepackage[alf]{abntcite}
+
+%=======================================================================
+% Dados gerais sobre o trabalho.
+%=======================================================================
+\autor{Hoffmann}{André Felipe da Silva}
+\titulo{Construção de Grafos de Conhecimento Educacional Orientada pela Taxonomia de Bloom com Modelos de Linguagem}
+
+\orientador[Dra.]{Francisco}{Rosemary}
+
+%\coorientador[Prof.~Dr.]{Lamport}{Leslie}
+
+\unidade{Unidade Acadêmica de Graduação}
+\curso{Curso de Bacharelado em Ciência da Computação}
+\natureza{%
+Monografia apresentada como requisito parcial para obtenção do título de Bacharel em Ciência da Computação, pelo Curso de Ciência da Computação da Universidade do Vale do Rio dos Sinos (UNISINOS)
+}
+\local{São Leopoldo}
+\ano{2024}
+
+% dados da ficha catalográfica
+% (obrigatória somente para dissertações e teses)
+%\cip{Dissertação (mestrado)}{004.732}
+%\bibliotecario{Bibliotecária responsável: Fulana da Silva}{12/3456}
+
+% cada palavra-chave deve ser fornecida duas vezes, uma em português e
+% outra no idioma estrangeiro (na verdade, em tantos idiomas quantos se
+% desejar).
+\palavrachave{brazilian}{Grafos de Conhecimento}
+\palavrachave{brazilian}{Aprendizado Adaptativo}
+\palavrachave{brazilian}{Modelos de Linguagem}
+\palavrachave{brazilian}{Taxonomia de Bloom}
+\palavrachave{brazilian}{Unidades de Conhecimento}
+\palavrachave{brazilian}{Educação Personalizada}
+\palavrachave{english}{Knowledge Graphs}
+\palavrachave{english}{Adaptive Learning}
+\palavrachave{english}{Language Models}
+\palavrachave{english}{Bloom's Taxonomy}
+\palavrachave{english}{Knowledge Components}
+\palavrachave{english}{Personalized Education}
+
+%=======================================================================
+% Início do documento.
+%=======================================================================
+\begin{document}
+\capa
+\folhaderosto
+%\folhadeaprovacao % não deve ser incluída nos TCCs
+
+%=======================================================================
+% Resumo em Português.
+%
+% A recomendação é para 150 a 500 palavras.
+%=======================================================================
+\begin{abstract}
+Este trabalho propõe uma metodologia para a construção automatizada de grafos de conhecimento educacional a partir de recursos como livros, artigos e vídeos. O sistema utiliza modelos de linguagem (LLMs) e algoritmos de grafos para extrair, organizar e classificar unidades de conhecimento (UCs), com o objetivo de gerar um grafo rico e adaptativo. A metodologia inclui etapas de processamento da linguagem natural, como segmentação de texto, extração de entidades e detecção de comunidades, além da aplicação da Taxonomia de Bloom para classificar as UCs em diferentes níveis cognitivos. O sistema gera um grafo de conhecimento que representa as relações entre os conceitos de forma clara e hierárquica, facilitando a navegação e a compreensão do conhecimento. A avaliação da dificuldade das UCs é realizada de forma comparativa, considerando a complexidade do conceito, o conhecimento prévio necessário e a clareza da linguagem. O sistema proposto utiliza LLMs para gerar estimativas iniciais de dificuldade e relações entre UCs, endereçando assim o problema do cold start em sistemas de aprendizado adaptativo e estabelecendo uma base que se adapta progressivamente conforme novos dados são coletados. Com base nesta capacidade adaptativa, o framework desenvolvido e fundamentado na Taxonomia de Bloom estabelece bases sólidas para expansões futuras, como a geração automatizada de exercícios específicos para cada nível cognitivo e o desenvolvimento de um sistema de recomendação de recursos complementares.
+\end{abstract}
+
+%=======================================================================
+% Resumo em língua estrangeira (obrigatório somente para teses e
+% dissertações).
+%
+% O idioma usado aqui deve necessariamente aparecer nos parâmetros do
+% \documentclass, no início do documento.
+%=======================================================================
+\begin{otherlanguage}{english}
+\begin{abstract}
+This work proposes a methodology for the automated construction of educational knowledge graphs from resources such as books, articles, and videos. The system utilizes language models (LLMs) and graph algorithms to extract, organize, and classify knowledge components (KCs), aiming to generate a rich and adaptive graph. The methodology includes natural language processing steps such as text segmentation, entity extraction, and community detection, in addition to the application of Bloom's Taxonomy to classify KCs into different cognitive levels. The system generates a knowledge graph that represents the relationships between concepts in a clear and hierarchical way, facilitating navigation and knowledge understanding. The assessment of KC difficulty is performed comparatively, considering the complexity of the concept, the required prior knowledge, and the clarity of the language. The proposed system seeks to address the cold start problem in adaptive learning systems by utilizing LLMs to generate initial estimates of difficulty and relationships between KCs, establishing a basis for progressive adaptation as new data is collected. Building upon this adaptive capability, the developed framework, grounded in Bloom's Taxonomy, lays a solid foundation for future expansions, such as the automated generation of exercises specific to each cognitive level and the development of a complementary resource recommendation system.
+\end{abstract}
+\end{otherlanguage}
+
+%=======================================================================
+% Sumário
+%=======================================================================
+\tableofcontents
+
+%=======================================================================
+% Introdução
+%=======================================================================
+\chapter{Introdução}
+
+Apesar do reconhecido potencial da educação personalizada, implementar sistemas de aprendizagem adaptativos na prática apresenta desafios significativos. Fechar a lacuna entre a pesquisa teórica e os aspectos práticos de criar sistemas escaláveis e adaptativos requer lidar com uma série de desafios complexos \cite{GOAT1}.  Esses sistemas precisam gerenciar eficientemente grandes quantidades de dados, incorporar novos conhecimentos e atender às diversas necessidades de alunos e educadores. 
+
+Modelos de domínio, que representam a estrutura fundamental e as relações entre os conceitos dentro de uma disciplina, são elementos chave para a construção de sistemas de aprendizagem adaptativa eficientes. Um aspecto-chave da modelagem de domínio é a definição de unidades de conhecimento (UC). Essas unidades representam os conceitos, habilidades ou procedimentos fundamentais que os alunos precisam dominar em um determinado assunto. As unidades de conhecimento são os blocos essenciais para recursos de aprendizagem adaptativa, incluindo recomendações personalizadas, visualização do progresso e caminhos de aprendizagem personalizados \cite{GOAT1}. No entanto, a construção de modelos de domínio eficazes apresenta desafios, como a necessidade de lidar com o problema de "cold start", que se refere à dificuldade em fornecer personalização no início da interação do aluno com o sistema devido à falta de dados sobre seu desempenho \cite{COLD_PROBLEM}.
+
+Esta pesquisa propõe um sistema para gerar automaticamente modelos de domínio a partir de diversos recursos educacionais (por exemplo, livros didáticos, artigos, vídeos), definindo unidades de conhecimento e suas inter-relações. O sistema utiliza modelos de linguagem de grande porte (LLMs) para criar uma estrutura inicial que pode ser progressivamente refinada com dados de interação dos alunos.  Essa estratégia visa a oferecer suporte adaptativo desde o início da interação do aluno com a plataforma, mesmo quando dados de interação ainda são escassos.
+
+
+\textbf{Problema de Pesquisa:} Como utilizar LLMs para automatizar a criação de modelos de domínio educacionais a partir de recursos diversos,  superando o problema de "cold start" e facilitando a personalização do aprendizado? 
+
+\textbf{Objetivo Geral:} Desenvolver um sistema automatizado para gerar modelos de domínio a partir de recursos educacionais diversos, utilizando LLMs para permitir o suporte adaptativo e progressivo ao aluno. 
+
+\textbf{Objetivos Específicos:}
+
+\begin{enumerate}
+    \item Criar um framework que permita a extração e organização automática de unidades de conhecimento a partir de materiais educacionais diversos, considerando diferentes níveis de complexidade cognitiva.
+    \item Estabelecer um modelo baseado em LLMs para estimar inicialmente as relações de pré-requisito e dificuldade entre unidades de conhecimento.
+    \item Implementar mecanismos que permitam o refinamento progressivo do modelo de domínio com base em dados de interação dos alunos. 
+    \item Demonstrar a viabilidade do sistema através de um estudo de caso aplicado a um domínio específico de conhecimento.
+\end{enumerate}
+
+A automatização da criação de grafos de conhecimento educacionais oferece um grande potencial para a área da educação. Ao facilitar a geração de modelos de domínio a partir de diferentes recursos, o sistema proposto pode auxiliar na criação de plataformas de aprendizagem adaptativa mais eficientes e personalizadas. A utilização de LLMs para a construção da estrutura inicial do modelo de domínio permite superar o problema de "cold start" e oferecer suporte desde o início da interação do aluno com a plataforma.
+
+Para apresentar o desenvolvimento desta proposta, este trabalho está organizado em 5 capítulos. O Capítulo 2 apresenta a fundamentação teórica, abordando conceitos essenciais como dificuldade no contexto de aprendizado adaptativo, modelos de domínio, grafos de conhecimento, unidades de conhecimento (UCs), Taxonomia de Bloom e modelos de linguagem (LLMs). O Capítulo 3 discute os trabalhos relacionados, analisando diferentes abordagens para a construção de grafos de conhecimento educacional, detecção de pré-requisitos e estimativa de dificuldade. O Capítulo 4 detalha a metodologia proposta, incluindo a estrutura geral, as ferramentas utilizadas, o processo de construção do grafo de conhecimento e a validação inicial. Por fim, o Capítulo 5 apresenta o sistema proposto, descrevendo sua arquitetura, funcionalidades e perspectivas futuras.
+%=======================================================================
+% Escrevendo o Texto
+%=======================================================================
+\chapter{Fundamentação Teórica}
+\section{Dificuldade no Contexto de Aprendizado Adaptativo}
+A definição e modelagem da dificuldade de unidades de conhecimento é crucial em sistemas de aprendizado adaptativo. \citeonline{GOAT1} destaca a importância de definir adequadamente o nível de dificuldade dos componentes do conhecimento, pois isso afeta diretamente a personalização do aprendizado e a motivação do aluno. Imagine, por exemplo, um sistema de tutoria de matemática que apresenta a um aluno que ainda está aprendendo adição e subtração um problema envolvendo equações de segundo grau. Ao mesmo tempo, se o sistema apresentar a um aluno que já domina álgebra um problema como "1 + 1 = ?", ele pode se sentir entediado e desestimulado. Essa discrepância pode gerar frustração e desmotivação, levando o aluno a abandonar o sistema.
+
+Em sistemas de aprendizado adaptativo, a dificuldade de cada unidade de conhecimento pode ser ajustada dinamicamente com base nos dados de interação dos alunos de forma contínua. Existem diferentes métodos para estimar a dificuldade, incluindo abordagens colaborativas, como a exemplificada em \citeonline{COLD_PROBLEM}, que utilizam dados de múltiplos alunos, e abordagens individualizadas, que concentram-se no desempenho individual de cada aluno. No entanto, mesmo as abordagens que utilizam dados de múltiplos alunos podem enfrentar o problema de "cold start", já que ainda é necessário algum nível de interação para que o sistema colete dados suficientes e forneça sugestões pertinentes. Ao utilizar LLMs para estimar a dificuldade das unidades de conhecimento, podemos oferecer uma experiência personalizada desde o início da interação do aluno com o sistema, mesmo quando dados de interação ainda são escassos.
+
+\section{Modelo de Domínio e Grafo de Conhecimento}
+O modelo de domínio é um componente essencial em sistemas de aprendizado adaptativo, pois define a estrutura conceitual do conhecimento que deve ser aprendido. Ele descreve os conceitos principais de uma área de estudo, suas características e as relações entre eles, permitindo que o sistema de aprendizado compreenda a progressão lógica dos tópicos. Conforme discutido por \citeonline{GOAT1}, a construção de um modelo de domínio envolve uma série de desafios e trade-offs. O autor destaca que a criação de um modelo de domínio deve equilibrar precisão e generalidade, garantindo que os conceitos sejam suficientemente específicos para suportar o aprendizado eficaz, mas não tão detalhados que se tornem inflexíveis ou impraticáveis de aplicar em um ambiente dinâmico.
+
+No contexto de aprendizado adaptativo, um modelo de domínio precisa também lidar com o problema da complexidade crescente, pois incluir muitos detalhes pode dificultar a aplicação prática dos conceitos. Pelánek argumenta que uma boa modelagem de domínio deve levar em consideração tanto a acessibilidade quanto a utilidade prática, sendo flexível o suficiente para se adaptar a diferentes perfis de alunos.
+
+Por outro lado, um grafo de conhecimento pode ser entendido como uma implementação prática do modelo de domínio. Enquanto o modelo de domínio estabelece a visão teórica das relações conceituais, o grafo de conhecimento organiza essas relações de forma visual e computacional, permitindo uma representação intuitiva e estruturada. Em um grafo, cada nó representa um conceito e as arestas indicam as conexões, como pré-requisitos ou relações de dependência. Dessa forma, o grafo de conhecimento não só materializa o modelo de domínio, mas também facilita o acesso e a navegação por essas informações, ajudando o sistema a compreender como guiar o aluno pelo conteúdo de forma eficaz.
+
+Assim, enquanto o modelo de domínio oferece a base conceitual e estratégica sobre o que deve ser ensinado e como, o grafo de conhecimento fornece uma representação prática e navegável que pode ser utilizada pelo sistema de aprendizado para fornecer feedback e adaptar o conteúdo ao progresso do aluno.
+
+
+\section{Unidade de Conhecimento (UC)}
+A Unidade de Conhecimento é um componente central em modelos de domínio para aprendizado adaptativo. As UC representam blocos fundamentais do conhecimento que os alunos precisam dominar em um determinado campo. No contexto da teoria da aprendizagem e dos modelos educacionais, uma UC é definida como uma "unidade adquirida de função ou estrutura cognitiva", sendo inferida com base no desempenho do aluno em tarefas relacionadas \cite{Koedinger_1,GOAT2}.
+
+\citeonline{GOAT1} destaca que, na construção de modelos de domínio, a definição de UC é uma tarefa que envolve uma série de nuances e desafios. Em um sistema adaptativo, é crucial que as UCs sejam definidas de forma que representem unidades funcionais do conhecimento — suficientemente granulares para permitir uma personalização eficaz, mas também suficientemente amplas para evitar a fragmentação excessiva do conteúdo. Esse equilíbrio é um dos principais desafios mencionados por Pelánek: a complexidade pode aumentar muito rapidamente se as UCs forem excessivamente detalhadas, dificultando a implementação prática e a navegação eficiente pelo conteúdo.
+
+Além disso, Pelánek ressalta que as UCs não são apenas entidades isoladas; elas formam a base para determinar como o conhecimento pode ser representado e organizado em um modelo de domínio mais coeso. Por exemplo, cada UC pode ser conectada a outras UCs através de relações de pré-requisito, generalização-especialização ou até mesmo associações contextuais. No contexto do aprendizado adaptativo, isso significa que o sistema deve ser capaz de compreender não apenas quais UCs um aluno já dominou, mas também como essas UCs se relacionam entre si para facilitar a construção de um conhecimento progressivo e bem estruturado.
+
+Portanto, ao definir UCs, o objetivo principal é garantir que o sistema possa utilizá-las efetivamente para guiar o aluno em um caminho de aprendizado coerente e adaptativo. Isso implica em considerar aspectos como\cite{GOAT1}:
+\begin{itemize}
+    
+\item Granularidade: Cada UC deve ser granular o suficiente para capturar um aspecto relevante do conhecimento, mas não tão detalhada a ponto de complicar a estrutura do modelo de domínio.
+
+\item Relacionamento entre UCs: Os tipos de relação que existem entre as UCs, como relações de pré-requisito (o que precisa ser aprendido antes) ou relações de suporte (o que facilita o aprendizado de outra UC), desempenham um papel fundamental na forma como o sistema recomenda atividades ou conteúdos.
+\end{itemize}
+    
+Assim, as Unidades de Conhecimento servem não só para agrupar itens de aprendizagem relacionados, como "adição de frações" ou "capitalização de nomes próprios", mas também como elementos fundamentais para garantir a eficiência do aprendizado adaptativo, permitindo que o sistema navegue entre diferentes níveis de complexidade do conhecimento.
+
+\section{Taxonomia de Bloom}
+A Taxonomia de Bloom, originalmente desenvolvida por Benjamin Bloom e colaboradores em 1956 \cite{Bloom}, é uma estrutura fundamental na educação, auxiliando na categorização de objetivos educacionais em diferentes níveis de complexidade cognitiva. Essa taxonomia organiza as habilidades em uma hierarquia que se estende do básico - como memorizar fatos - ao complexo -  avaliar e criar novas ideias. Os níveis da Taxonomia de Bloom - Conhecimento, Compreensão, Aplicação, Análise, Síntese e Avaliação -  são amplamente utilizados para definir a progressão de habilidades que um aluno deve desenvolver ao longo de sua jornada educacional.
+
+Em 2001, a taxonomia passou por uma revisão, resultando em uma estrutura mais dinâmica e focada nos processos cognitivos. Nessa versão revisada, os substantivos originais foram transformados em verbos, como lembrar, entender, aplicar, analisar, avaliar e criar, para melhor representar as ações mentais envolvidas em cada nível. Essa mudança facilita a aplicação da Taxonomia de Bloom em contextos de aprendizado adaptativo, permitindo uma definição mais precisa das habilidades e uma melhor personalização do aprendizado.\cite{Bloom}
+
+No contexto desta pesquisa, a Taxonomia de Bloom revisada desempenha um papel importante na estruturação das Unidades de Conhecimento (UCs) que compõem o modelo de domínio. Ao classificar as UCs nos diferentes níveis da taxonomia, utilizando-a como uma heurística para guiar a expansão do grafo de conhecimento, podemos criar um grafo que reflita a progressão natural das habilidades e personalize a experiência de aprendizado.
+
+A utilização de LLMs para gerar UCs complementares para cada nível da Taxonomia de Bloom garante que o grafo de conhecimento seja abrangente e completo, mesmo quando a UC principal extraída do material didático se concentra em apenas um nível da taxonomia. A Tabela \ref{table:bloom_exemple} apresenta exemplos de como o sistema pode gerar UCs complementares para a UC principal "Capital de Botswana", que se encaixa no nível "lembrar", expandindo para os outros níveis da Taxonomia de Bloom.
+
+\begin{table}[h]
+\centering
+\caption{Unidades de Conhecimento geradas utilizando 'Capital de Botswana' como conceito base}
+\begin{tabular}{|c|l|}
+\hline
+\textbf{Nível} & \textbf{Unidades de Conhecimento} \\ \hline
+Lembrar & • Capital de Botswana \\ \hline
+Compreender & • Compreender a importância da capital de Botswana no contexto do país. \\
+ & • Descrever as funções e características de uma capital. \\ \hline
+Aplicar & • Ser capaz de localizar a capital de Botswana em um mapa. \\
+ & • Identificar a capital de Botswana em uma lista de cidades. \\ \hline
+Analisar & • Comparar a capital de Botswana com outras capitais africanas, \\
+ &  identificando semelhanças e diferenças. \\
+ & • Analisar os fatores que influenciaram a escolha da capital \\
+ &  de Botswana. \\ \hline
+Avaliar & • Justificar a localização da capital de Botswana com base em \\
+ &  critérios geográficos, políticos e sociais. \\
+ & • Avaliar a importância da capital para o desenvolvimento de \\
+ &  Botswana, considerando seus aspectos econômicos, \\
+ &  sociais e culturais. \\ \hline
+Criar & • Propor um projeto para melhorar a capital do país, considerando \\
+ &  os desafios e oportunidades de desenvolvimento urbano. \\
+ & • Elaborar um mapa da capital de Botswana, incluindo seus \\
+ &  principais pontos turísticos e áreas de interesse. \\ \hline
+\end{tabular}
+\label{table:bloom_exemple}
+\end{table}
+
+\section{Modelos de Linguagem (LLMs)}
+
+Modelos de Linguagem (LLMs) são modelos de inteligência artificial que, após treinamento em conjuntos massivos de dados de texto, demonstram notável capacidade na geração de texto, tradução de idiomas, escrita criativa e resposta a perguntas. Essa versatilidade no processamento da linguagem natural oferece um vasto potencial para diversas aplicações, incluindo a área educacional. Estudos recentes \cite{kojima2023largelanguagemodelszeroshot} demonstram que LLMs podem atuar como raciocinadores "zero-shot", operando com sucesso em tarefas complexas, como raciocínio aritmético e simbólico, sem necessidade de exemplos específicos. No presente trabalho, utilizamos prompts detalhados para guiar os LLMs na geração de Unidades de Conteúdo (UCs) e na avaliação da dificuldade, buscando demonstrar a viabilidade dessa abordagem. É importante notar que, para garantir a geração de UCs completas e informativas, prompts mais extensos são necessários, o que pode resultar em um maior número de tokens. Isso não foi considerado um problema, visto que o foco principal da pesquisa reside na demonstração do potencial da aplicação de LLMs na construção de grafos de conhecimento educacional.
+
+
+\chapter{Trabalhos Relacionados}
+
+A seção "Trabalhos Relacionados" tem como objetivo contextualizar a pesquisa e apresentar o contexto da pesquisa de construção de grafos de conhecimento educacionais. Para a seleção dos trabalhos aqui apresentados, foi utilizada uma abordagem exploratória, iniciando com a análise do artigo KnowEdu \cite{KNOWEDU}, que serviu como principal inspiração para o desenvolvimento da metodologia proposta. A partir do KnowEdu, a pesquisa se expandiu para abranger trabalhos que abordassem os seguintes tópicos:
+
+\begin{itemize}
+    \item Construção de grafos de conhecimento na área educacional;
+    \item Uso da Taxonomia de Bloom na organização de informações educacionais;
+    \item Modelos de linguagem para a extração e organização de informações;
+    \item Estimativa de dificuldade de unidades de conhecimento;
+    \item Mitigação do problema de "cold start" em sistemas adaptativos.
+\end{itemize}
+
+A seleção dos trabalhos se deu por meio de buscas em bases de dados acadêmicas, utilizando palavras-chave como "grafos de conhecimento", "educação", "Taxonomia de Bloom", "modelos de linguagem" e "aprendizado adaptativo". Além disso, foram considerados trabalhos que referenciavam o KnowEdu e outros artigos relevantes encontrados durante a pesquisa.
+
+
+
+\section{Detecção de Pré-requisitos}
+
+O KnowEdu\cite{KNOWEDU} foi um dos primeiros esforços significativos para automatizar a criação de grafos de conhecimento educacionais, enfrentando o problema de como identificar relações de pré-requisito entre conceitos de forma eficiente. O objetivo principal do KnowEdu era construir automaticamente essas relações a partir de textos curriculares e dados de avaliação dos alunos, permitindo a criação de um grafo que refletisse as dependências instrucionais entre os tópicos de ensino. Para alcançar isso, os autores empregaram uma metodologia baseada em técnicas de mineração de regras e aprendizado de máquina, utilizando redes neurais para rotular sequências e inferir padrões entre os conceitos. A abordagem mostrou-se eficaz ao identificar padrões de conhecimento que eram difíceis de modelar manualmente. No entanto, o KnowEdu depende de um volume mínimo de dados educacionais para gerar inferências precisas, principalmente nos estágios iniciais do sistema, o que limita sua aplicabilidade em contextos de escassez de dados, criando o problema "Cold Start" explicado anteriormente. O trabalho atual busca superar essa limitação ao utilizar LLMs para fornecer estimativas iniciais robustas das relações de pré-requisito, permitindo a construção do grafo de conhecimento mesmo quando há pouca ou nenhuma informação prévia disponível, aumentando a escalabilidade e a aplicabilidade da abordagem em diferentes contextos educacionais.
+
+\section{Estimativa de Dificuldade}
+O trabalho de \citeonline{COLD_PROBLEM} abordou a questão da estimativa da dificuldade dos itens de aprendizagem, com o objetivo de melhorar a experiência adaptativa dos alunos, ajustando o conteúdo ao nível de habilidade de cada um. Garantir uma estimativa precisa da dificuldade é crucial para evitar que os alunos se sintam sobrecarregados com tarefas excessivamente complexas ou subestimados por atividades simplistas, promovendo um aprendizado mais eficaz e um maior engajamento.
+
+Para resolver esse problema, os autores propuseram diferentes estratégias de estimativa, variando entre abordagens colaborativas e individualizadas, que utilizavam fontes de dados variadas para prever a dificuldade dos itens. Essas abordagens permitiram avanços na precisão da estimativa da dificuldade, demonstrando que mesmo uma estimativa preliminar era significativamente mais eficaz do que a ausência de qualquer estimativa inicial ("Cold Start"). Esse resultado reforça a importância de fornecer estimativas iniciais para melhorar a adaptação dos conteúdos aos alunos.
+
+A aplicação dessas estratégias é particularmente relevante para este trabalho, pois indica que estimativas iniciais, mesmo que imperfeitas, são fundamentais para criar um ponto de partida valioso para a personalização. Baseado nisso, o sistema proposto utiliza LLMs para fornecer essas estimativas preliminares de dificuldade, garantindo uma base adaptativa desde o início, mesmo em ambientes com escassez de dados de interação.
+
+\section{Definição de Dependências com Base na Taxonomia de Bloom}
+\citeonline{10.1007/978-3-030-63212-0_15} propuseram uma abordagem para identificar dependências entre resultados de aprendizagem utilizando a Taxonomia de Bloom como referência. O framework introduziu dois tipos fundamentais de relações: "REQUIRES", que estabelece hierarquias de pré-requisitos baseadas em níveis cognitivos, e "EXPANDS", que indica relações de complementaridade entre conceitos. Para identificar estas relações, os autores desenvolveram um processo de análise sintática e semântica dos resultados de aprendizagem, permitindo extrair automaticamente as conexões entre diferentes elementos curriculares.
+
+A metodologia desenvolvida demonstrou como a Taxonomia de Bloom pode servir como base para estruturar relações entre componentes educacionais, estabelecendo tanto progressões hierárquicas de aprendizado quanto conexões laterais entre conceitos relacionados. O trabalho foi particularmente relevante ao mostrar que é possível automatizar parcialmente a identificação destas relações em currículos existentes, embora ainda exigindo considerável supervisão humana para validação.
+
+No trabalho atual, adaptamos alguns destes conceitos, especialmente a utilização da Taxonomia de Bloom como estrutura organizadora e a distinção entre relações hierárquicas e de complementaridade, expandindo a abordagem para o contexto de geração automatizada de unidades de conhecimento.
+
+
+\section{Organização e Respostas a Consultas com Grafos}
+O GraphRAG\cite{GraphRAG} propõe uma solução inovadora para responder a perguntas complexas e globais em grandes coleções de documentos, abordando o problema de como gerar respostas abrangentes que vão além da recuperação de fragmentos específicos de texto. O objetivo do GraphRAG é estruturar e organizar o conhecimento contido nos documentos, de forma que perguntas amplas possam ser respondidas de maneira integrada e completa. 
+
+Para atingir esse objetivo, a metodologia empregada combina a geração aumentada por recuperação (RAG) com uma abordagem baseada em grafos para modelagem do conhecimento, utilizando o algoritmo Leiden para detectar comunidades dentro do grafo e aplicar uma abordagem de map-reduce para sintetizar respostas. Além disso, LLMs são utilizados para gerar descrições das comunidades detectadas, permitindo uma visão coesa e hierárquica dos tópicos tratados. 
+
+O GraphRAG se destaca por criar uma estrutura modular de conhecimento, capaz de responder de forma eficiente a perguntas globais. No trabalho atual, foi feita a adaptação desses conceitos para estruturar e hierarquizar unidades de conhecimento. O algoritmo Leiden foi utilizado para identificar módulos de conceitos relacionados, com cada comunidade detectada representando um grupo coeso de tópicos educacionais. 
+
+Os resumos gerados para cada grupo de conceitos são tratados como unidades de conhecimento de granularidade superior, criando uma hierarquia de abstração que facilita a navegação e a personalização do aprendizado. Dessa forma, enquanto o GraphRAG foca na organização e resposta a questões globais, o presente trabalho adapta esses conceitos para construir um grafo educacional dinâmico e hierárquico, adequado para a personalização do aprendizado em diferentes níveis de granularidade.
+
+\section{Comparação dos Trabalhos Relacionados} 
+
+A Tabela \ref{tab:trabalhos_relacionados} apresenta uma análise comparativa dos trabalhos relacionados, destacando seus objetivos, métodos, contribuições e limitações. A análise crítica desses trabalhos fornece um panorama das lacunas existentes e direciona as contribuições da presente pesquisa.
+
+
+
+\begin{longtable}{|p{2.5cm}|p{3cm}|p{3cm}|p{3cm}|p{3cm}|}
+\caption{Tabela Comparativa dos Trabalhos Relacionados} \label{tab:trabalhos_relacionados} \\
+\hline
+\centering\textbf{Autor e Ano} & \centering\textbf{Objetivo} & \centering\textbf{Ferramentas / Abordagem} & \centering\textbf{Principais Contribuições} & \centering\textbf{Limitações / Lacunas} \\
+\hline
+\endfirsthead
+
+\multicolumn{5}{c}%
+{\tablename\ \thetable\ -- \textit{Continuação da página anterior}} \\
+\hline
+\textbf{Autor e Ano} & \textbf{Objetivo} & \textbf{Ferramentas/Abordagem} & \textbf{Principais Contribuições} & \textbf{Limitações/Lacunas} \\
+\hline
+\endhead
+
+\hline \multicolumn{5}{r}{\textit{Continuação na próxima página}} \\
+\endfoot
+
+\hline
+\endlastfoot
+
+\citeonline{KNOWEDU} & 
+Criar um grafo de conhecimento a partir de currículos escolares. & 
+Algoritmos de mineração de regras e aprendizado de máquina. &
+Estruturação eficiente de conceitos educacionais; Identificação de padrões de conhecimento. &
+Depende de grandes volumes de dados; Problema de "Cold Start" em estágios iniciais. \\
+\hline
+
+\citeonline{COLD_PROBLEM} & 
+Estimar a dificuldade de unidades de conhecimento. & 
+Modelos baseados em dados históricos e diferentes estratégias de estimativa (colaborativas e individualizadas). &
+Ajusta a dificuldade para melhorar a personalização; Demonstra a importância de estimativas iniciais. &
+A abordagem ao problema de "Cold Start" não pode ser adaptada para unidades de conhecimento recém criadas e sem nenhum dado de iteração de alunos \\
+\hline
+
+\citeonline{10.1007/978-3-030-63212-0_15} & 
+Definir dependências entre resultados de aprendizagem. & 
+Taxonomia de Bloom Revisada; Relações "REQUIRES" e "EXPANDS". &
+Framework para categorizar dependências entre UCs; Abordagem estruturada para representar hierarquia e complementaridade. &
+Foco na definição de dependências, não na geração de UCs. \\
+\hline
+
+\citeonline{GraphRAG} & 
+Responder a perguntas complexas em grandes coleções de documentos. & 
+Geração aumentada por recuperação (RAG); Abordagem baseada em grafos; Algoritmo Leiden; LLMs para gerar descrições. &
+Criação de uma estrutura modular de conhecimento; Respostas abrangentes a perguntas globais. &
+Foco na recuperação de informações, não na personalização do aprendizado. \\
+\hline
+
+\end{longtable}
+
+\chapter{Metodologia}
+
+Inspirado na técnica GraphRAG \cite{GraphRAG}, este trabalho propõe uma metodologia para a construção de grafos de conhecimento educacional a partir de recursos como livros, artigos e vídeos educacionais. A metodologia utiliza modelos de linguagem e algoritmos de grafos para extrair, organizar e classificar unidades de conhecimento (UCs), com o objetivo de gerar um grafo rico e adaptativo.
+
+\section{Estrutura Geral da Metodologia}
+
+A metodologia é composta pelas seguintes etapas principais:
+
+\begin{enumerate}
+    \item \textbf{Ferramentas e Tecnologias}
+    
+    Nesta etapa, são apresentadas as ferramentas e tecnologias utilizadas no trabalho.
+    \item \textbf{Construção do Grafo de Conhecimento com GraphRAG}
+Esta etapa envolve a aplicação da técnica GraphRAG \cite{GraphRAG} para construir um grafo de conhecimento a partir dos recursos processados. O processo inclui:
+    \begin{itemize}
+        \item Chunking e extração de entidades.
+        \item Resolução de entidades.
+        \item Detecção de comunidades.
+        \item Geração de resumos.
+    \end{itemize}
+
+    \item \textbf{Construção do Grafo de Conhecimento Educacional}
+
+    Esta etapa descreve o processo de construção do grafo de conhecimento educacional a partir das informações extraídas e organizadas na etapa anterior. O objetivo é criar um grafo que represente as relações entre os conceitos de forma clara, hierárquica e adaptativa, facilitando a navegação e a compreensão do conhecimento. As seguintes etapas são realizadas:
+    \begin{itemize}
+        \item Criação de UCs: Geração de UCs para cada entidade, para cada um dos 6 níveis da Taxonomia de Bloom, utilizando o resumo da comunidade como contexto. 
+        \item Avaliação da dificuldade das UCs.
+    \end{itemize}
+
+    \item \textbf{Validação inicial} Descrição da proposta de estudo de caso.
+\end{enumerate}
+
+Essa estrutura visa a automatizar a criação de grafos de conhecimento educacional, utilizando técnicas de processamento de linguagem natural e algoritmos de grafos para gerar um grafo rico e adaptativo, que permita a personalização do aprendizado e a criação de sistemas educacionais mais eficientes. 
+
+\section{Ferramentas e Tecnologias}
+
+Abaixo estão listados algumas ferramentas e tecnologias que o sistema utiliza:
+
+\begin{itemize}
+    \item \textbf{LangChain:} Framework para desenvolvimento de aplicações baseadas em LLMs, utilizado para processamento de documentos, extração de informações e geração de UCs.
+    \item \textbf{NetworkX:} Biblioteca para criação, manipulação e análise de grafos, utilizada para construir e analisar o grafo de conhecimento.
+    \item \textbf{Neo4j:} Banco de dados orientado a grafos, utilizado para armazenar e consultar o grafo de conhecimento.
+    \item \textbf{Flask/FastAPI:} Framework web para desenvolvimento da API, que permite a interação com o sistema.
+    \item \textbf{RQ:} Framework para gerenciamento de jobs, utilizado para processar os materiais educacionais de forma assíncrona.
+\end{itemize}
+
+
+\section{Construção do Grafo de Conhecimento (Baseado em GraphRAG)}
+
+Esta etapa envolve a aplicação da técnica GraphRAG \cite{GraphRAG} para construir um grafo de conhecimento educacional a partir dos recursos processados. O processo inclui:
+
+\subsection{Chunking e extração de entidades} 
+
+A metodologia de chunking e extração de entidades é baseada na abordagem GraphRAG proposta por \citeonline{edge2024graphrag}. Os recursos educacionais são segmentados em chunks menores para facilitar o processamento com LLMs. Em seguida, utilizando o LLMGraphTransformer auxiliado pela técnica de "gleanings", o sistema extrai entidades relevantes (conceitos, termos-chave) e as relações entre elas a partir de cada chunk.
+
+\begin{enumerate}
+    \item \textbf{Segmentação do Texto (Text Chunking)}
+    
+    A segmentação do texto em chunks menores é fundamental para otimizar o processamento com modelos de linguagem. A implementação utiliza chunks de 600 tokens, tamanho que oferece um equilíbrio entre a capacidade de processamento e a qualidade da extração de entidades. Para garantir a completude da extração, o sistema realiza múltiplas iterações quando necessário.
+    
+    \item \textbf{Extração de Nós e Relacionamentos}
+    
+    A extração de nós e relacionamentos é realizada através de um modelo de linguagem de grande porte configurado para esta tarefa específica. O processo emprega dois componentes principais:
+    
+    \begin{itemize}
+        \item \textbf{LLMGraphTransformer:} Componente da biblioteca LangChain especializado na extração de entidades e relacionamentos, incluindo suas descrições. Este transformador processa o texto de forma estruturada, facilitando a construção posterior do grafo.
+        
+        \item \textbf{Gleanings:} Técnica que implementa múltiplas rodadas de extração para maximizar a identificação de entidades relevantes. Este processo iterativo pode ser parametrizado para ajustar o número de rodadas e o tamanho dos chunks, permitindo um equilíbrio entre precisão e eficiência computacional.
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Resolução de Entidades}
+
+Um desafio importante na construção do grafo de conhecimento é a identificação e mesclagem de entidades duplicadas. O processo de resolução de entidades implementado segue a abordagem desenvolvida por \citeonline{edge2024graphrag}, utilizando uma combinação de embeddings de texto, análise de grafos e avaliação com LLMs. Este processo se desenvolve em quatro etapas principais:
+
+\begin{enumerate}
+    \item \textbf{Cálculo de Embeddings de Texto:} O sistema calcula embeddings de texto para cada entidade, considerando seu nome e descrição. Esta representação vetorial captura o significado semântico das entidades, permitindo comparações numéricas eficientes.
+    
+    \item \textbf{Construção do grafo k-Nearest Neighbors:} Com base nos embeddings calculados, constrói-se um grafo onde cada entidade se conecta às k entidades mais similares. Este passo inicial agrupa possíveis duplicatas que apresentam variações textuais menores.
+    
+    \item \textbf{Análise de Componentes:} O sistema identifica componentes fracamente conectados no grafo, revelando grupos de entidades potencialmente relacionadas. Um filtro adicional baseado em distância textual é aplicado para evitar a mesclagem indevida de entidades que, apesar de similares, representam conceitos distintos.
+    
+    \item \textbf{Avaliação Semântica:} Na etapa final, um modelo de linguagem avalia os grupos de entidades candidatas à mesclagem. Esta avaliação, conforme apresentado em \citeonline{edge2024graphrag}, considera aspectos sutis como variações tipográficas (e.g., "Silicon Valley Bank" versus "Silicon\_Valley\_Bank") e diferenças semânticas significativas (como datas distintas), garantindo que apenas entidades verdadeiramente equivalentes sejam mescladas.
+\end{enumerate}
+
+Esta abordagem multinível permite uma resolução de entidades robusta, combinando a eficiência de métodos baseados em similaridade vetorial com a capacidade de análise semântica refinada dos modelos de linguagem.
+
+\subsection{Detecção de Comunidades}
+
+Seguindo a abordagem proposta por \cite{GraphRAG}, o algoritmo de Leiden \cite{Leiden} é aplicado para particionar o grafo em comunidades. O objetivo é identificar grupos de entidades que compartilham conexões mais fortes entre si do que com o restante do grafo, aproveitando a modularidade natural presente em grafos de conhecimento educacional.
+
+A escolha do algoritmo de Leiden se justifica por duas características principais: sua capacidade de revelar estruturas hierárquicas e a garantia de comunidades bem conectadas. A estrutura hierárquica permite identificar múltiplos níveis de granularidade na organização do grafo, facilitando a navegação entre comunidades principais e suas subcomunidades. Além disso, o algoritmo assegura que as comunidades formadas sejam coesas, com nós fortemente interligados, evitando a geração de agrupamentos fracamente conectados ou pouco significativos.
+
+Como resultado, o grafo é particionado em comunidades distintas, cada uma representando um conjunto coeso de conceitos, ideias ou entidades fortemente inter-relacionadas. Esta estruturação hierárquica serve como base para a geração de resumos e posterior processamento do conhecimento extraído.
+
+\subsection{Geração de Resumos}
+
+A etapa de geração de resumos visa criar descrições concisas e informativas para cada comunidade identificada no grafo de conhecimento. No GraphRAG original, estes resumos servem como uma representação intermediária eficiente para responder consultas complexas sobre o corpus de documentos, permitindo que o modelo de linguagem acesse e sintetize informações relevantes de forma estruturada.
+
+A adaptação para o contexto educacional estende o uso destes resumos para dois propósitos adicionais: organização hierárquica do conhecimento e base para a criação de Unidades de Conhecimento (UCs). A estrutura hierárquica facilita a navegação e compreensão do grafo em diferentes níveis de granularidade, enquanto as UCs derivadas dos resumos permitem uma representação mais granular e adaptativa do conhecimento para fins educacionais.
+
+O processo de geração dos resumos varia de acordo com o nível da comunidade na hierarquia. Para comunidades folha, o sistema prioriza e adiciona iterativamente os sumários dos elementos (nós, arestas e covariáveis) ao contexto do LLM até atingir o limite de tokens. A priorização considera o grau combinado dos nós fonte e destino de cada aresta, favorecendo elementos mais conectados. Para comunidades de níveis superiores, o sistema primeiro tenta sumarizar todos os elementos; caso excedam o limite de tokens, substitui progressivamente sumários de elementos por sumários de subcomunidades, que são mais concisos, até adequar-se ao limite do contexto.
+
+Em ambas as abordagens, os resumos são gerados por modelos de linguagem que sintetizam as informações relevantes de cada comunidade em textos concisos. A principal diferença está no objetivo final: enquanto o GraphRAG original foca na resposta a consultas, este trabalho prioriza a estruturação do conhecimento para aplicações educacionais adaptativas.
+
+\section{Construção do Grafo de Conhecimento Educacional}
+\subsection{Criação de UCs}
+A geração das Unidades de Conhecimento (UCs) constitui uma etapa fundamental após a extração e organização das entidades e seus relacionamentos. O processo visa criar UCs que abordem cada conceito através dos seis níveis cognitivos da Taxonomia de Bloom Revisada, estabelecendo assim uma representação abrangente do conhecimento no grafo.
+
+O sistema gera conjuntos de UCs a partir de duas fontes principais: as entidades extraídas diretamente dos recursos educacionais e os resumos gerados para cada comunidade no grafo de conhecimento. Enquanto as UCs derivadas de entidades exploram conceitos específicos, aquelas originadas dos resumos representam conhecimentos mais amplos, referentes a grupos de UCs inter-relacionadas. Esta abordagem permite a construção de um grafo hierárquico com múltiplos níveis de granularidade.
+
+Para garantir transparência, cada UC mantém um registro de sua origem, possibilitando a rastreabilidade do conhecimento no grafo. A geração das UCs é orientada por um prompt detalhado (apresentado no Apêndice \ref{apendice:prompt_ucs}), que fornece ao LLM diretrizes essenciais, incluindo a definição de UC, a descrição da Taxonomia de Bloom Revisada e instruções específicas para a geração de UCs complementares em cada nível cognitivo. O resultado deste processo é então estruturado em formato JSON.
+
+A elaboração de um prompt detalhado é crucial para maximizar o potencial dos LLMs na geração de UCs de alta qualidade. Ao combinar a capacidade dos LLMs de produzir texto coerente e criativo com as diretrizes estruturadas da Taxonomia de Bloom Revisada, o sistema consegue gerar UCs que capturam adequadamente a complexidade e as nuances de cada conceito, contribuindo para a construção de um grafo de conhecimento educacional robusto e adaptativo.
+
+\subsection{Definindo as relações entre UCs}
+
+As relações entre as UCs no grafo de conhecimento educacional são definidas considerando suas origens e os níveis cognitivos da Taxonomia de Bloom Revisada. Para a definição destas relações, utilizamos como base o trabalho de \citeonline{10.1007/978-3-030-63212-0_15}, que propõe dois tipos principais de dependências entre os resultados de aprendizagem:
+\begin{itemize}
+
+\item REQUIRES: Utilizada para conectar UCs de mesma origem. Todas as UCs derivadas da mesma entidade ou resumo estão interligadas por essa relação, seguindo a ordem dos níveis cognitivos da Taxonomia de Bloom. Essa relação representa uma hierarquia de aprendizado, indicando que a compreensão de uma UC em um nível inferior é essencial para a progressão para níveis superiores. Por exemplo, a UC "Aplicar a fórmula de Bhaskara para resolver equações do segundo grau" requer a UC "Entender o conceito de equação do segundo grau", ambas originadas da entidade "equação do segundo grau".
+\item EXPANDS: Conecta UCs de diferentes origens, mas cujas origens possuem alguma relação identificada na etapa de extração de entidades. Essa relação indica que as UCs oferecem perspectivas complementares sobre o mesmo tema, expandindo o conhecimento de forma mais abrangente. Por exemplo, a UC "Compreender o contexto histórico da Guerra Fria" (originada da entidade "Guerra Fria") pode estar relacionada com a UC "Analisar o impacto da Guerra Fria na geopolítica global" (originada da entidade "geopolítica"), expandindo o entendimento do tema.
+\end{itemize}
+A utilização das relações REQUIRES e EXPANDS, em conjunto com a definição de "origem", permite a construção de um grafo de conhecimento educacional rico e interconectado. Essa estrutura reflete a complexidade do aprendizado, representando as UCs em diferentes níveis de granularidade, com suas hierarquias e interdependências.
+
+\subsection{Avaliação da dificuldade das UCs}
+Após a geração e extração das UCs, a próxima etapa consiste em avaliar a dificuldade de cada UC em uma escala de 0 a 100, sendo 0 "muito fácil" e 100 "muito difícil". Essa avaliação será realizada de forma comparativa entre UCs de mesmo nível taxonômico e pertencentes ao mesmo contexto, ou seja, à mesma UC de granularidade superior.
+
+Para realizar essa avaliação, será utilizado um LLM guiado por um prompt (apresentado no Apêndice \ref{apendice:prompt_dificuldade}) que o direciona para a tarefa de analisar as UCs e determinar sua dificuldade. O prompt instrui o LLM a realizar a avaliação com base em critérios como a complexidade do conceito, o conhecimento prévio necessário e a clareza da linguagem.
+
+O número de UCs comparadas em cada avaliação será parametrizado, com um valor padrão de 5, considerando que LLMs tendem a apresentar menor precisão ao analisar listas muito extensas. Caso o número de UCs em um contexto exceda esse parâmetro, serão realizadas múltiplas avaliações. As UCs serão selecionadas para comparação de forma semi-aleatória, considerando o número de vezes que cada uma já foi avaliada, até que todas tenham participado de um número mínimo de avaliações, definido por parâmetro. No fim, o valor médio entre o resultado de todas as execuções de cada UC será considerado.
+
+É fundamental destacar que a avaliação da dificuldade é comparativa e, portanto, a troca das UCs em uma comparação pode resultar em avaliações diferentes. Essa característica será considerada na análise dos resultados, buscando garantir a robustez e a confiabilidade da avaliação.
+
+\section{Validação Inicial}
+
+A validação inicial da metodologia proposta será realizada através de uma abordagem iterativa de desenvolvimento e análise, envolvendo um processo cíclico de:
+
+\begin{enumerate}
+\item Design e revisão do modelo de domínio
+\item Preparação do conteúdo inicial
+\item Coleta de dados através do sistema
+\item  Análise dos dados e identificação de problemas
+\item Refinamento do modelo com base nas análises
+\end{enumerate}
+
+
+Para esta validação inicial, será utilizado o domínio de História, com foco em temas do Ensino Médio como a Revolução Francesa e a Independência do Brasil. Este domínio foi escolhido por apresentar uma estrutura rica em informações e relações, adequada para demonstrar as capacidades do sistema proposto.
+
+A análise do grafo gerado seguirá critérios adaptados de \citeonline{GOAT2,GOAT1}, considerando aspectos fundamentais para modelos de domínio educacional:
+
+\begin{itemize}
+    \item \textbf{Homogeneidade das UCs}: Avaliação da consistência interna das unidades de conhecimento geradas, verificando se mantêm um nível apropriado de granularidade e coesão temática;
+    
+    \item \textbf{Relações Estruturais}: Análise das relações hierárquicas e prerequisitos entre UCs, verificando se refletem adequadamente a estrutura do conhecimento histórico;
+    
+    \item \textbf{Aplicabilidade Pedagógica}: Verificação da utilidade das UCs e suas relações para fins educacionais, especialmente em termos de sequenciamento de conteúdo e suporte à aprendizagem adaptativa;
+    
+    \item \textbf{Escalabilidade}: Avaliação da capacidade do sistema de processar e organizar eficientemente grandes volumes de conteúdo mantendo a qualidade das UCs geradas.
+\end{itemize}
+
+Esta abordagem de validação reconhece que, conforme destacado por Pelánek (2024), o desenvolvimento de sistemas educacionais adaptativos é um processo complexo que requer equilíbrio entre precisão teórica e viabilidade prática. Assim, a validação não busca apenas confirmar a eficácia do sistema, mas também identificar áreas para aprimoramento contínuo.
+
+
+\chapter{Sistema Proposto}
+
+O sistema proposto visa automatizar a construção de grafos de conhecimento educacional a partir de recursos como livros, artigos e vídeos. Utilizando modelos de linguagem (LLMs) e algoritmos de grafos, o sistema extrai, organiza e classifica unidades de conhecimento (UCs) com o objetivo de gerar um grafo rico e adaptativo que permita a personalização do aprendizado e a criação de sistemas educacionais mais eficientes. O sistema é agnóstico em relação ao LLM, fornecendo interfaces para definir o modelo utilizado na extração de UCs, avaliação da dificuldade e outras tarefas.
+
+É importante destacar que o sistema não se propõe a construir um modelo individualizado do estudante, mas sim um grafo de conhecimento genérico que pode ser utilizado e adaptado por diferentes estudantes. A dificuldade das UCs, por exemplo, é definida de forma geral e pode ser refinada por meio de feedback dos alunos ou outros sistemas externos.
+
+\section{Arquitetura Planejada}
+
+A arquitetura do sistema, ilustrada na Figura \ref{fig:arquitetura}, é modular e se organiza em torno do processamento dos materiais educacionais e da construção do grafo de conhecimento.
+
+\begin{figure}[htb]
+\centering
+\includegraphics[width=\textwidth]{images/arquitetura.png} % Substitua "sua_imagem.png" pelo nome do arquivo da sua imagem
+\caption{Arquitetura do sistema proposto.}
+\label{fig:arquitetura}
+\end{figure}
+
+Os módulos que compõem o sistema são:
+
+\begin{itemize}
+    \item \textbf{Entrada de Dados:} Recebe materiais educacionais em diversos formatos (texto, PDF, vídeo, etc.), converte-os para um formato textual padronizado e os segmenta em unidades menores para processamento.
+
+    \item \textbf{Gerenciador de Jobs:} Responsável por gerenciar o processamento dos materiais educacionais. Utiliza uma fila de jobs para processar os materiais de forma assíncrona e um monitor de status para acompanhar o progresso do processamento.
+
+    \item \textbf{Processamento:} Responsável por extrair, analisar e organizar as informações dos materiais educacionais. Utiliza LLMs para extrair entidades, relações e gerar UCs, além de algoritmos de grafos para agrupamento e organização das informações no grafo de conhecimento (detalhados no capítulo 4 - Metodologia).
+
+    \item \textbf{Grafo de Conhecimento:} Armazena as UCs e suas relações em um grafo, definindo pré-requisitos, hierarquia e dificuldade. Permite a edição de UCs e seus relacionamentos, além de oferecer um sistema de "flag" para sinalizar UCs problemáticas.
+
+    \item \textbf{Interface API:} Fornece uma interface programática para interagir com o sistema. A API disponibiliza endpoints para acessar as unidades de conhecimento, visualizar o grafo e realizar outras operações.
+\end{itemize}
+
+\section{Criação do Grafo de Conhecimento}
+
+O processo de criação do grafo de conhecimento é iniciado com a submissão de um job "ProcessarMaterial" através da API. Para isso, o usuário primeiramente disponibiliza o(s) material(is) educacional(is) em um bucket designado. Em seguida, o usuário invoca o endpoint \texttt{/jobs/ProcessarMaterial}, fornecendo a localização do(s) material(is) no bucket. O sistema, então, converte o(s) material(is) para um formato textual padronizado e o submete ao pipeline de processamento descrito no capítulo "Metodologia".
+
+\section{Interação com o Grafo através da API}
+
+Após a criação do grafo de conhecimento, usuários e outras aplicações podem interagir com o sistema através da API. A API oferece endpoints para:
+
+\begin{itemize}
+    \item Acessar as UCs: Consultar UCs por ID, nome, nível taxonômico ou outros critérios, incluindo busca semântica que permite encontrar UCs relacionadas ao significado da consulta, e não apenas à correspondência exata de palavras-chave.
+    \item Explorar o grafo: Obter informações sobre as relações entre as UCs e navegar pela estrutura do grafo.
+    \item Visualizar o grafo: Gerar imagens do grafo completo ou de subgrafos específicos, permitindo a exploração visual do conhecimento.
+    \item Gerenciar o grafo: Submeter novos jobs para processar materiais adicionais, editar UCs existentes ou atualizar a dificuldade das UCs com base em novas informações.
+\end{itemize}
+
+\section{Exemplo de Fluxo de Interação}
+
+\begin{enumerate}
+    \item Um usuário disponibiliza o material educacional em um bucket.
+    \item O usuário invoca o endpoint \texttt{/jobs/ProcessarMaterial}, informando a localização do material no bucket.
+    \item O sistema processa o material, cria o grafo de conhecimento e retorna o ID do job.
+    \item O usuário consulta o status do job através do endpoint \texttt{/jobs/{id}}.
+    \item Após o job ser concluído, o usuário pode acessar as UCs geradas através do endpoint \texttt{/unidades\_conhecimento}.
+    \item O usuário pode visualizar o grafo ou subgrafos específicos através dos endpoints \texttt{/visualizacao/grafo} e \texttt{/visualizacao/subgrafo/{id}}.
+\end{enumerate}
+
+\section{Perspectivas Futuras}
+
+Ao endereçar o problema do cold start com a utilização de LLMs para gerar estimativas iniciais de dificuldade e relações entre UCs, o sistema proposto estabelece uma base para a adaptação progressiva do sistema. A partir dessa base, o framework desenvolvido pode ser expandido em diversas direções. A estruturação explícita das UCs em níveis cognitivos, fundamentada na Taxonomia de Bloom, apresenta grande potencial para a geração automatizada de exercícios, e a vinculação entre UCs e os chunks de texto originais possibilita o desenvolvimento de um sistema de recomendação de recursos complementares. A integração com sistemas externos de aprendizado e avaliação pode ser explorada para refinar as estimativas iniciais e personalizar ainda mais a experiência de aprendizado.
+
+%=======================================================================
+% Referências
+%=======================================================================
+\bibliography{exemplo}
+
+\appendix
+\chapter{Prompt para Geração de UCs} \label{apendice:prompt_ucs}
+O prompt a seguir foi elaborado para guiar o modelo de linguagem na geração de UCs. Ele inclui uma breve explicação sobre o que são UCs e a Taxonomia de Bloom Revisada, além de instruções claras sobre a tarefa a ser realizada, com ênfase na utilização dos verbos da taxonomia e na relação entre as UCs e o conceito principal. A estrutura do prompt tenta maximizar a capacidade do modelo de linguagem de gerar UCs relevantes, completas e personalizadas para cada conceito. \textbf{Conforme discutido na seção sobre LLMs, a otimização do número de tokens não foi priorizada na elaboração deste prompt, visando, neste momento, apenas a validação da viabilidade da tarefa.} \\
+
+PROMPT:
+
+\begin{quote}
+
+Você é um especialista em educação, capaz de gerar Unidades de Conhecimento (UCs) abrangentes e personalizadas com base na Taxonomia de Bloom Revisada.
+
+\textbf{O que é uma UC?}
+
+Uma UC representa um conceito, habilidade ou informação que um aluno deve aprender. As UCs podem variar em complexidade, desde a simples memorização de um fato até a aplicação do conhecimento em situações complexas e a criação de algo novo.
+
+\textbf{O que é a Taxonomia de Bloom Revisada?}
+
+A Taxonomia de Bloom Revisada é uma estrutura que classifica os objetivos de aprendizagem em seis níveis cognitivos:
+
+\begin{enumerate}
+\item \textbf{Lembrar:} reconhecer e reproduzir informações. \\
+Verbos: identificar, listar, descrever, nomear, rotular, localizar, selecionar, definir, recitar, delinear, declarar, repetir, memorizar, enunciar, registrar.
+\item \textbf{Entender:} interpretar, exemplificar, classificar, resumir, inferir, comparar e explicar informações. \\
+Verbos: explicar, resumir, parafrasear, classificar, exemplificar, converter, traduzir, ilustrar, demonstrar, apresentar, fornecer exemplos, mostrar, categorizar, organizar, agrupar, diferenciar, distinguir, sintetizar, condensar, encurtar, recapitular, compendiar, concluir, deduzir, interpretar, extrapolar, interpolar, comparar, contrastar, relacionar, analisar, distinguir, descrever, discutir, esclarecer, interpretar, justificar.
+\item \textbf{Aplicar:} executar e implementar o conhecimento em situações novas. \\
+Verbos: realizar, implementar, aplicar, usar, empregar, manipular, operar, construir, desenvolver, simular, projetar, experimentar, solucionar.
+\item \textbf{Analisar:} diferenciar, organizar, atribuir e concluir sobre as partes e relações de uma informação. \\
+Verbos: discriminar, distinguir, separar, comparar, contrastar, estruturar, sequenciar, integrar, classificar, delinear, esquematizar, determinar, conectar, relacionar, identificar, analisar, encontrar, deduzir, inferir, derivar, interpretar, justificar, explicar.
+\item \textbf{Avaliar:} checar e criticar a informação com base em critérios. \\
+Verbos: testar, validar, verificar, controlar, monitorar, examinar, inspecionar, julgar, argumentar, justificar, defender, questionar, avaliar, recomendar.
+\item \textbf{Criar:} generalizar, planejar e produzir algo novo a partir do conhecimento. \\
+Verbos: formular, construir, desenvolver, criar, projetar, produzir, compor, organizar, esquematizar, desenhar, estruturar, propor, estabelecer, idealizar, gerar, construir, inventar, compor, criar, desenvolver, originar.
+\end{enumerate}
+
+\textbf{Sua tarefa:}
+
+Com base no conceito fornecido, gere UCs complementares que explorem os seis níveis da Taxonomia de Bloom Revisada.
+
+\textbf{Observações:}
+
+\begin{itemize}
+\item Utilize os verbos da Taxonomia de Bloom Revisada para formular as UCs complementares.
+\item Assegure-se de que as UCs complementares estejam relacionadas ao conceito principal.
+\end{itemize}
+
+\textbf{Número de UCs por nível:} \{\{Número de UCs desejadas\}\}
+
+\textbf{Contexto:} (Necessário para garantir desambiguação entre conceitos similares) \\
+\{\{resumo criado para à comunidade agrupada pelo algorítimo de leiden\}\}
+
+\textbf{Conceito:} \\
+\{\{UC avaliada\}\} 
+
+\end{quote}
+
+
+
+
+% \appendix
+\chapter{Prompt para definição da dificuldade} \label{apendice:prompt_dificuldade}
+
+O prompt a seguir foi elaborado para guiar o modelo de linguagem na avaliação da dificuldade das UCs. Ele inclui uma breve explicação sobre o que são UCs, os critérios a serem considerados na avaliação da dificuldade e instruções claras sobre a tarefa a ser realizada. A estrutura do prompt foi projetada para auxiliar o modelo de linguagem a fornecer avaliações consistentes com os objetivos do sistema. \textbf{Conforme discutido na seção sobre LLMs, a otimização do número de tokens não foi priorizada na elaboração deste prompt, visando, neste momento, apenas a validação da viabilidade da tarefa.} \\
+
+PROMPT:
+\begin{quote}
+Você é um especialista em educação, capaz de analisar unidades de conhecimento (UCs) e determinar o seu nível de dificuldade.
+
+Uma UC representa um conceito, habilidade ou informação que um aluno deve aprender. As UCs podem variar em complexidade, desde a simples memorização de um fato até a aplicação do conhecimento em situações complexas.
+
+Sua tarefa é avaliar a dificuldade das UCs a seguir em uma escala de 0 a 100, onde 0 representa 'muito fácil' e 100 'muito difícil'. Leve em consideração os seguintes critérios ao determinar a dificuldade:
+
+\begin{itemize}
+\item Complexidade do conceito: conceitos abstratos e multifacetados são mais difíceis de aprender do que conceitos simples e concretos.
+\item Habilidades cognitivas necessárias: UCs que exigem análise, síntese ou avaliação são mais difíceis do que aquelas que exigem apenas memorização ou compreensão.
+\item Conhecimento prévio necessário: UCs que exigem conhecimento prévio de outros conceitos são mais difíceis do que aquelas que podem ser aprendidas isoladamente.
+\item Clareza da linguagem: UCs escritas em linguagem clara e concisa são mais fáceis de aprender do que aquelas com linguagem complexa ou ambígua.
+\end{itemize}
+
+\textbf{UCs a serem avaliadas:}
+
+\{\{lista de UCs separadas por bullet points\}\}
+
+\textbf{Resposta:}
+
+Avalie a dificuldade de cada UC em uma escala de 0 a 100 e justifique sua resposta com base nos critérios fornecidos.
+
+\textbf{Observações:}
+
+\begin{itemize}
+\item Evite dar a mesma nota para todas as UCs.
+\item Utilize todo o espectro da escala de 0 a 100 para avaliar as UCs.
+\item Assegure-se de que suas avaliações sejam consistentes e imparciais.
+\item Lembre-se de que você é um especialista em educação e suas avaliações devem refletir sua expertise.
+\end{itemize}
+
+\end{quote}
+
+\end{document}
