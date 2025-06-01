@@ -8,6 +8,8 @@ import app.models as models
 import app.schemas as schemas
 from app.db import get_db
 
+import logging
+
 router = APIRouter(
     prefix="/api/v1",
     tags=["Results"],
@@ -657,3 +659,189 @@ def list_detailed_knowledge_unit_origins(
         response_list.append(final_origin_response_obj)
 
     return response_list
+
+
+uc_model_cache_for_request: Dict[str, models.FinalKnowledgeUnit] = {}
+
+
+def _build_detailed_origin_node(
+        db_origin: models.KnowledgeUnitOrigin,
+        run_id: str,
+        db: Session,
+        max_depth: int,
+        limit_children_per_node: Optional[int],  # NOVO PARÂMETRO
+        current_depth: int = 0
+) -> schemas.OriginWithUCsAndRelationshipsResponse:
+    """
+    Constrói um nó da árvore de Origin detalhado, incluindo UCs, relações e filhos recursivamente.
+    """
+    global uc_model_cache_for_request  # Acessa o cache global da requisição
+
+    logging.debug(f"Construindo nó para Origin ID: {db_origin.origin_id} na profundidade: {current_depth}")
+
+    # Usar model_validate para criar o dicionário base a partir do objeto ORM
+    origin_response_data = schemas.OriginWithUCsAndRelationshipsResponse.model_validate(db_origin).model_dump()
+    origin_response_data["knowledge_units"] = []  # Inicializa a lista de UCs
+    origin_response_data["children"] = []  # Inicializa a lista de filhos
+
+    # 1. Popular Knowledge Units e suas Relações
+    db_ucs_for_origin = db.query(models.FinalKnowledgeUnit).filter(
+        models.FinalKnowledgeUnit.pipeline_run_id == run_id,
+        models.FinalKnowledgeUnit.origin_id == db_origin.origin_id
+    ).all()
+
+    for db_uc_item in db_ucs_for_origin:  # Renomeado db_uc para db_uc_item
+        if db_uc_item.uc_id not in uc_model_cache_for_request:
+            uc_model_cache_for_request[db_uc_item.uc_id] = db_uc_item
+
+        # Montar os dados base da UC
+        uc_response_base_data = schemas.FinalKnowledgeUnitResponse.model_validate(db_uc_item).model_dump()
+
+        current_uc_relationships_as_source: List[schemas.UCRelationshipDetail] = []
+        current_uc_relationships_as_target: List[schemas.UCRelationshipDetail] = []
+
+        # Popular relationships_as_source
+        db_rels_as_source = db.query(models.FinalKnowledgeRelationship).filter(
+            models.FinalKnowledgeRelationship.pipeline_run_id == run_id,
+            models.FinalKnowledgeRelationship.source == db_uc_item.uc_id
+        ).all()
+        for db_rel_s in db_rels_as_source:
+            related_text, related_bloom, related_difficulty = None, None, None
+            target_uc_model = uc_model_cache_for_request.get(db_rel_s.target)
+            if not target_uc_model:
+                target_uc_model = db.query(models.FinalKnowledgeUnit).filter_by(pipeline_run_id=run_id,
+                                                                                uc_id=db_rel_s.target).first()
+                if target_uc_model: uc_model_cache_for_request[db_rel_s.target] = target_uc_model
+            if target_uc_model:
+                related_text, related_bloom, related_difficulty = target_uc_model.uc_text, target_uc_model.bloom_level, target_uc_model.difficulty_score
+            current_uc_relationships_as_source.append(schemas.UCRelationshipDetail(
+                relationship_type=db_rel_s.type, related_uc_id=db_rel_s.target,
+                related_uc_text=related_text, related_uc_bloom_level=related_bloom,
+                related_uc_difficulty_score=related_difficulty
+            ))
+
+        # Popular relationships_as_target
+        db_rels_as_target = db.query(models.FinalKnowledgeRelationship).filter(
+            models.FinalKnowledgeRelationship.pipeline_run_id == run_id,
+            models.FinalKnowledgeRelationship.target == db_uc_item.uc_id
+        ).all()
+        for db_rel_t in db_rels_as_target:
+            related_text, related_bloom, related_difficulty = None, None, None
+            source_uc_model = uc_model_cache_for_request.get(db_rel_t.source)
+            if not source_uc_model:
+                source_uc_model = db.query(models.FinalKnowledgeUnit).filter_by(pipeline_run_id=run_id,
+                                                                                uc_id=db_rel_t.source).first()
+                if source_uc_model: uc_model_cache_for_request[db_rel_t.source] = source_uc_model
+            if source_uc_model:
+                related_text, related_bloom, related_difficulty = source_uc_model.uc_text, source_uc_model.bloom_level, source_uc_model.difficulty_score
+            current_uc_relationships_as_target.append(schemas.UCRelationshipDetail(
+                relationship_type=db_rel_t.type, related_uc_id=db_rel_t.source,
+                related_uc_text=related_text, related_uc_bloom_level=related_bloom,
+                related_uc_difficulty_score=related_difficulty
+            ))
+
+        # Criar o objeto UCWithRelationshipsResponse completo
+        uc_with_rels_obj = schemas.UCWithRelationshipsResponse(
+            **uc_response_base_data,  # Campos da FinalKnowledgeUnitResponse
+            relationships_as_source=current_uc_relationships_as_source,
+            relationships_as_target=current_uc_relationships_as_target
+        )
+        origin_response_data["knowledge_units"].append(uc_with_rels_obj)
+
+    # 2. Popular Filhos (Recursivamente com limite de largura)
+    if current_depth < max_depth:
+        logging.debug(
+            f"Buscando filhos para Origin ID: {db_origin.origin_id} (profundidade atual {current_depth}, max {max_depth}, limite filhos: {limit_children_per_node})")
+
+        query_children = db.query(models.KnowledgeUnitOrigin).filter(
+            models.KnowledgeUnitOrigin.pipeline_run_id == run_id,
+            models.KnowledgeUnitOrigin.parent_community_id_of_origin == db_origin.origin_id
+        ).order_by(models.KnowledgeUnitOrigin.title)  # Ordenar para consistência
+
+        if limit_children_per_node is not None and limit_children_per_node > 0:  # Aplicar limite de filhos
+            logging.debug(f"Aplicando limite de {limit_children_per_node} filhos para Origin ID: {db_origin.origin_id}")
+            query_children = query_children.limit(limit_children_per_node)
+
+        child_origins_db = query_children.all()
+
+        if child_origins_db:
+            logging.info(
+                f"Origin {db_origin.origin_id} tem {len(child_origins_db)} filhos (após limite de {limit_children_per_node}). Processando...")
+            for child_db_origin in child_origins_db:
+                # Chamada recursiva, passando o limite de filhos
+                child_node = _build_detailed_origin_node(
+                    child_db_origin, run_id, db, max_depth, limit_children_per_node, current_depth + 1
+                )
+                origin_response_data["children"].append(child_node)
+        else:
+            logging.debug(f"Origin {db_origin.origin_id} não tem filhos ou todos foram filtrados pelo limite.")
+    else:
+        logging.info(
+            f"Profundidade máxima ({max_depth}) atingida para Origin ID: {db_origin.origin_id}. Não buscando mais filhos.")
+
+    # Retornar o objeto Pydantic construído a partir do dicionário
+    return schemas.OriginWithUCsAndRelationshipsResponse(**origin_response_data)
+
+
+@router.get(
+    "/runs/{run_id}/origins/tree",
+    response_model=List[schemas.OriginWithUCsAndRelationshipsResponse],
+    summary="List ROOT Knowledge Unit Origins as a tree with UCs, Relations, children (recursive, with limits)"
+)
+def list_root_origins_as_tree(
+        run_id: str,
+        skip_roots: int = Query(0, ge=0, description="Number of root origins to skip (for pagination)"),
+        limit_roots: int = Query(10, ge=1, le=100, description="Max number of root origins to return"),
+        max_depth: int = Query(3, ge=0, le=10, description="Max depth of the children hierarchy (0 for only roots)"),
+        limit_children_per_node: Optional[int] = Query(5, ge=1,
+                                                       description="Max children per origin node. Omit or 0 for no limit (can be slow)."),
+        # Ajustado o default e descrição
+        origin_type_filter: Optional[str] = Query(None, alias="origin_type", description="Filter root origins by type"),
+        db: Session = Depends(get_db)
+):
+    global uc_model_cache_for_request  # Limpa/inicializa o cache para esta nova requisição
+    uc_model_cache_for_request = {}
+
+    # Se limit_children_per_node for 0, tratar como None (sem limite)
+    actual_limit_children = limit_children_per_node if limit_children_per_node and limit_children_per_node > 0 else None
+
+    logging.info(
+        f"Iniciando list_root_origins_as_tree para run_id: {run_id}, skip_roots: {skip_roots}, limit_roots: {limit_roots}, max_depth: {max_depth}, limit_children: {actual_limit_children}")
+
+    run = crud.pipeline_run.get_run(db, run_id=run_id)
+    if not run:
+        logging.error(f"Pipeline run '{run_id}' não encontrado.")
+        raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found")
+
+    # 1. Buscar as Origins RAIZ para o run_id com skip e limit
+    query_root_origins = db.query(models.KnowledgeUnitOrigin).filter(
+        models.KnowledgeUnitOrigin.pipeline_run_id == run_id,
+        models.KnowledgeUnitOrigin.parent_community_id_of_origin == None  # Condição para ser raiz
+    )
+    if origin_type_filter:
+        query_root_origins = query_root_origins.filter(models.KnowledgeUnitOrigin.origin_type == origin_type_filter)
+
+    db_root_origins = query_root_origins.order_by(models.KnowledgeUnitOrigin.title).offset(skip_roots).limit(
+        limit_roots).all()
+
+    if not db_root_origins:
+        logging.info(f"Nenhuma origin raiz encontrada para run_id: {run_id} com os filtros aplicados.")
+        return []
+
+    logging.info(f"Encontradas {len(db_root_origins)} origins raiz. Construindo árvore...")
+    response_tree_list: List[schemas.OriginWithUCsAndRelationshipsResponse] = []
+
+    for db_root_origin in db_root_origins:
+        # Chama a função auxiliar para construir a árvore para cada raiz
+        root_node = _build_detailed_origin_node(
+            db_root_origin,
+            run_id,
+            db,
+            max_depth,
+            actual_limit_children,  # Passa o limite de filhos ajustado
+            current_depth=0
+        )
+        response_tree_list.append(root_node)
+
+    logging.info(f"Construção da árvore concluída para {len(response_tree_list)} raízes.")
+    return response_tree_list

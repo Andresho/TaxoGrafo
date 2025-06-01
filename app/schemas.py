@@ -1,6 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, ForwardRef
 import uuid
 
 # ------------------------------
@@ -158,9 +158,13 @@ class UCWithRelationshipsResponse(FinalKnowledgeUnitResponse):
     class Config:
         from_attributes = True
 
+DetailedOrigin = ForwardRef('OriginWithUCsAndRelationshipsResponse')
 
 class OriginWithUCsAndRelationshipsResponse(KnowledgeUnitOriginResponse):
     knowledge_units: List[UCWithRelationshipsResponse] = []
+    children: List[DetailedOrigin] = []
 
     class Config:
         from_attributes = True
+
+OriginWithUCsAndRelationshipsResponse.model_rebuild()
