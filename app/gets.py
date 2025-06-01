@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Dict
 from sqlalchemy import or_
 
 import app.crud as crud
@@ -154,29 +154,6 @@ def list_final_relationships(
     return relationships
 
 
-# --- Endpoints para Origens das UCs ---
-@router.get(
-    "/runs/{run_id}/origins",
-    response_model=List[schemas.KnowledgeUnitOriginResponse],
-    summary="List Knowledge Unit Origins for a Run"
-)
-def list_knowledge_unit_origins(
-        run_id: str,
-        skip: int = Query(0, ge=0),
-        limit: int = Query(100, ge=1, le=1000),
-        origin_type: Optional[str] = Query(None, description="Filter by origin type (e.g., entity, community_summary)"),
-        db: Session = Depends(get_db)
-):
-    run = crud.pipeline_run.get_run(db, run_id=run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found")
-
-    query = db.query(models.KnowledgeUnitOrigin).filter(models.KnowledgeUnitOrigin.pipeline_run_id == run_id)
-    if origin_type:
-        query = query.filter(models.KnowledgeUnitOrigin.origin_type == origin_type)
-
-    origins = query.offset(skip).limit(limit).all()
-    return origins
 
 @router.get(
     "/runs/{run_id}/origins/{origin_id}/knowledge-units",
@@ -554,3 +531,129 @@ def get_origins_hierarchy_tree(
         current_level_origin_ids = next_level_origin_ids  # Prepara para o próximo nível
 
     return schemas.GraphResponse(nodes=list(nodes_map.values()), edges=edges_list)
+
+@router.get(
+    "/runs/{run_id}/origins/detailed",
+    #response_model=List[schemas.OriginWithUCsAndRelationshipsResponse],
+    summary="List Knowledge Unit Origins with their UCs and Relationships"
+)
+def list_detailed_knowledge_unit_origins(
+        run_id: str,
+        skip: int = Query(0, ge=0),
+        limit: int = Query(10, ge=1, le=1000),
+        origin_type_filter: Optional[str] = Query(None, alias="origin_type"),
+        db: Session = Depends(get_db)
+):
+    run = crud.pipeline_run.get_run(db, run_id=run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found")
+
+    query_origins = db.query(models.KnowledgeUnitOrigin).filter(
+        models.KnowledgeUnitOrigin.pipeline_run_id == run_id
+    )
+    if origin_type_filter:
+        query_origins = query_origins.filter(models.KnowledgeUnitOrigin.origin_type == origin_type_filter)
+
+    db_origins = query_origins.order_by(models.KnowledgeUnitOrigin.title).offset(skip).limit(limit).all()
+
+    response_list: List[schemas.OriginWithUCsAndRelationshipsResponse] = []
+
+    # Cache para modelos de UCs, para evitar múltiplas buscas pelo mesmo UC_ID
+    uc_model_cache: Dict[str, models.FinalKnowledgeUnit] = {}
+
+    for db_origin in db_origins:
+        origin_response_data = schemas.OriginWithUCsAndRelationshipsResponse.model_validate(db_origin).model_dump()
+        origin_response_data["knowledge_units"] = []  # Inicializa a lista
+
+        # Buscar UCs para esta origin
+        db_ucs_for_origin = db.query(models.FinalKnowledgeUnit).filter(
+            models.FinalKnowledgeUnit.pipeline_run_id == run_id,
+            models.FinalKnowledgeUnit.origin_id == db_origin.origin_id
+        ).all()
+
+        for db_uc in db_ucs_for_origin:
+            # Adicionar ao cache se não estiver lá
+            if db_uc.uc_id not in uc_model_cache:
+                uc_model_cache[db_uc.uc_id] = db_uc
+
+            # Montar os dados base da UC
+            uc_response_base_data = schemas.FinalKnowledgeUnitResponse.model_validate(db_uc).model_dump()
+
+            current_uc_relationships_as_source: List[schemas.UCRelationshipDetail] = []
+            current_uc_relationships_as_target: List[schemas.UCRelationshipDetail] = []
+
+            # Popular relationships_as_source
+            db_rels_as_source = db.query(models.FinalKnowledgeRelationship).filter(
+                models.FinalKnowledgeRelationship.pipeline_run_id == run_id,
+                models.FinalKnowledgeRelationship.source == db_uc.uc_id
+            ).all()
+
+            for db_rel_s in db_rels_as_source:
+                related_text = None
+                related_bloom_level = None
+
+                target_uc_model = uc_model_cache.get(db_rel_s.target)
+                if not target_uc_model:  # Se não está no cache, busca no DB
+                    target_uc_model = db.query(models.FinalKnowledgeUnit).filter_by(
+                        pipeline_run_id=run_id, uc_id=db_rel_s.target
+                    ).first()
+                    if target_uc_model:
+                        uc_model_cache[db_rel_s.target] = target_uc_model  # Adiciona ao cache
+
+                if target_uc_model:
+                    related_text = target_uc_model.uc_text
+                    related_bloom_level = target_uc_model.bloom_level
+
+                current_uc_relationships_as_source.append(
+                    schemas.UCRelationshipDetail(
+                        relationship_type=db_rel_s.type,
+                        related_uc_id=db_rel_s.target,
+                        related_uc_text=related_text,
+                        related_uc_bloom_level=related_bloom_level
+                    )
+                )
+
+            # Popular relationships_as_target
+            db_rels_as_target = db.query(models.FinalKnowledgeRelationship).filter(
+                models.FinalKnowledgeRelationship.pipeline_run_id == run_id,
+                models.FinalKnowledgeRelationship.target == db_uc.uc_id
+            ).all()
+
+            for db_rel_t in db_rels_as_target:
+                related_text = None
+                related_bloom_level = None
+
+                source_uc_model = uc_model_cache.get(db_rel_t.source)
+                if not source_uc_model:  # Se não está no cache, busca no DB
+                    source_uc_model = db.query(models.FinalKnowledgeUnit).filter_by(
+                        pipeline_run_id=run_id, uc_id=db_rel_t.source
+                    ).first()
+                    if source_uc_model:
+                        uc_model_cache[db_rel_t.source] = source_uc_model  # Adiciona ao cache
+
+                if source_uc_model:
+                    related_text = source_uc_model.uc_text
+                    related_bloom_level = source_uc_model.bloom_level
+
+                current_uc_relationships_as_target.append(
+                    schemas.UCRelationshipDetail(
+                        relationship_type=db_rel_t.type,
+                        related_uc_id=db_rel_t.source,
+                        related_uc_text=related_text,
+                        related_uc_bloom_level=related_bloom_level
+                    )
+                )
+
+            # Criar o objeto UCWithRelationshipsResponse completo
+            uc_with_rels_obj = schemas.UCWithRelationshipsResponse(
+                **uc_response_base_data,  # Campos da FinalKnowledgeUnitResponse
+                relationships_as_source=current_uc_relationships_as_source,
+                relationships_as_target=current_uc_relationships_as_target
+            )
+            origin_response_data["knowledge_units"].append(uc_with_rels_obj)
+
+        # Criar o objeto OriginWithUCsAndRelationshipsResponse final
+        final_origin_response_obj = schemas.OriginWithUCsAndRelationshipsResponse(**origin_response_data)
+        response_list.append(final_origin_response_obj)
+
+    return response_list

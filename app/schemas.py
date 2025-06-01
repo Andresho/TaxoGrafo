@@ -16,14 +16,14 @@ class PipelineRunSummary(PipelineRunBase):
     started_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class PipelineRunDetail(PipelineRunSummary):
     finished_at: Optional[datetime] = None
     payload: Optional[dict] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 # ------------------------------
@@ -43,7 +43,7 @@ class FinalKnowledgeUnitResponse(FinalKnowledgeUnitBase):
     pipeline_run_id: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # ------------------------------
 # Final Knowledge Relationship Schemas
@@ -62,7 +62,7 @@ class FinalKnowledgeRelationshipResponse(FinalKnowledgeRelationshipBase):
     pipeline_run_id: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
         allow_population_by_field_name = True
 
 
@@ -84,7 +84,7 @@ class KnowledgeUnitOriginResponse(KnowledgeUnitOriginBase):
     pipeline_run_id: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # ------------------------------
 # Graph Visualization Schemas
@@ -134,8 +134,32 @@ class ResourceResponse(ResourceBase):
     processed_at: Optional[datetime] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class PipelineInitRequest(BaseModel):
     resource_ids: List[uuid.UUID]
     skip_graphrag: Optional[bool] = False
+
+class UCRelationshipDetail(BaseModel):
+    relationship_type: str
+    related_uc_id: str
+    related_uc_text: Optional[str] = None
+    related_uc_bloom_level: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class UCWithRelationshipsResponse(FinalKnowledgeUnitResponse):
+    relationships_as_source: List[UCRelationshipDetail] = []
+    relationships_as_target: List[UCRelationshipDetail] = []
+
+    class Config:
+        from_attributes = True
+
+
+class OriginWithUCsAndRelationshipsResponse(KnowledgeUnitOriginResponse):
+    knowledge_units: List[UCWithRelationshipsResponse] = []
+
+    class Config:
+        from_attributes = True

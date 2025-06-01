@@ -157,6 +157,13 @@ class KnowledgeUnitOrigin(Base):
     level = Column(Integer)
     parent_community_id_of_origin = Column(String)
 
+    ucs = relationship(
+        "FinalKnowledgeUnit",
+        primaryjoin="and_(FinalKnowledgeUnit.pipeline_run_id == KnowledgeUnitOrigin.pipeline_run_id, FinalKnowledgeUnit.origin_id == KnowledgeUnitOrigin.origin_id)",
+        foreign_keys="[FinalKnowledgeUnit.pipeline_run_id, FinalKnowledgeUnit.origin_id]",
+        back_populates="origin"
+    )
+
     # ------------------------
     # Generated UCs and relationships tables
     # ------------------------
@@ -188,6 +195,30 @@ class FinalKnowledgeUnit(Base):
     difficulty_score = Column(Integer)
     evaluation_count = Column(Integer)
     difficulty_justification = Column(Text)
+    
+    # Relação para KnowledgeUnitOrigin
+    origin = relationship(
+        "KnowledgeUnitOrigin",
+        foreign_keys=[pipeline_run_id, origin_id], # FKs em FinalKnowledgeUnit
+        primaryjoin="and_(FinalKnowledgeUnit.pipeline_run_id == KnowledgeUnitOrigin.pipeline_run_id, FinalKnowledgeUnit.origin_id == KnowledgeUnitOrigin.origin_id)",
+        back_populates="ucs"
+    )
+
+    relationships_as_source = relationship(
+        "FinalKnowledgeRelationship",
+        foreign_keys="[FinalKnowledgeRelationship.pipeline_run_id, FinalKnowledgeRelationship.source]",
+        primaryjoin="and_(FinalKnowledgeUnit.pipeline_run_id == FinalKnowledgeRelationship.pipeline_run_id, FinalKnowledgeUnit.uc_id == FinalKnowledgeRelationship.source)",
+        back_populates="source_uc_details",
+        cascade="all, delete-orphan"
+    )
+
+    relationships_as_target = relationship(
+        "FinalKnowledgeRelationship",
+        foreign_keys="[FinalKnowledgeRelationship.pipeline_run_id, FinalKnowledgeRelationship.target]",
+        primaryjoin="and_(FinalKnowledgeUnit.pipeline_run_id == FinalKnowledgeRelationship.pipeline_run_id, FinalKnowledgeUnit.uc_id == FinalKnowledgeRelationship.target)",
+        back_populates="target_uc_details",
+        cascade="all, delete-orphan"
+    )
 
 class FinalKnowledgeRelationship(Base):
     __tablename__ = 'final_knowledge_relationships'
@@ -195,9 +226,26 @@ class FinalKnowledgeRelationship(Base):
     source = Column(String, primary_key=True)
     target = Column(String, primary_key=True)
     type = Column(String, primary_key=True)
-    origin_id = Column(String)
-    weight = Column(Float)
-    graphrag_rel_desc = Column(Text)
+
+    __table_args__ = (
+        ForeignKeyConstraint(['pipeline_run_id', 'source'],
+                             ['final_knowledge_units.pipeline_run_id', 'final_knowledge_units.uc_id']),
+        ForeignKeyConstraint(['pipeline_run_id', 'target'],
+                             ['final_knowledge_units.pipeline_run_id', 'final_knowledge_units.uc_id']),
+    )
+
+    source_uc_details = relationship(
+        "FinalKnowledgeUnit",
+        foreign_keys=[pipeline_run_id, source],
+        back_populates="relationships_as_source"
+    )
+
+    target_uc_details = relationship(
+        "FinalKnowledgeUnit",
+        foreign_keys=[pipeline_run_id, target],
+        back_populates="relationships_as_target"
+    )
+
 
 # ------------------------
 # UC evaluations raw table
@@ -263,3 +311,12 @@ class PipelineBatchJob(Base):
 
     def __repr__(self):
         return f"<PipelineBatchJob(id={self.id}, run_id='{self.pipeline_run_id}', type='{self.batch_type}', status='{self.status}')>"
+
+
+
+
+
+
+
+
+
