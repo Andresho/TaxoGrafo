@@ -145,6 +145,7 @@ class UCRelationshipDetail(BaseModel):
     related_uc_id: str
     related_uc_text: Optional[str] = None
     related_uc_bloom_level: Optional[str] = None
+    related_uc_difficulty_score: Optional[int] = None
 
     class Config:
         from_attributes = True

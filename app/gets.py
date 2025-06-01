@@ -532,10 +532,11 @@ def get_origins_hierarchy_tree(
 
     return schemas.GraphResponse(nodes=list(nodes_map.values()), edges=edges_list)
 
+
 @router.get(
     "/runs/{run_id}/origins/detailed",
-    #response_model=List[schemas.OriginWithUCsAndRelationshipsResponse],
-    summary="List Knowledge Unit Origins with their UCs and Relationships"
+    response_model=List[schemas.OriginWithUCsAndRelationshipsResponse],
+    summary="List Knowledge Unit Origins with their UCs and Relationships (including related UC difficulty)"
 )
 def list_detailed_knowledge_unit_origins(
         run_id: str,
@@ -557,26 +558,21 @@ def list_detailed_knowledge_unit_origins(
     db_origins = query_origins.order_by(models.KnowledgeUnitOrigin.title).offset(skip).limit(limit).all()
 
     response_list: List[schemas.OriginWithUCsAndRelationshipsResponse] = []
-
-    # Cache para modelos de UCs, para evitar múltiplas buscas pelo mesmo UC_ID
-    uc_model_cache: Dict[str, models.FinalKnowledgeUnit] = {}
+    uc_model_cache: Dict[str, models.FinalKnowledgeUnit] = {}  # Cache para modelos de UCs
 
     for db_origin in db_origins:
         origin_response_data = schemas.OriginWithUCsAndRelationshipsResponse.model_validate(db_origin).model_dump()
-        origin_response_data["knowledge_units"] = []  # Inicializa a lista
+        origin_response_data["knowledge_units"] = []
 
-        # Buscar UCs para esta origin
         db_ucs_for_origin = db.query(models.FinalKnowledgeUnit).filter(
             models.FinalKnowledgeUnit.pipeline_run_id == run_id,
             models.FinalKnowledgeUnit.origin_id == db_origin.origin_id
         ).all()
 
         for db_uc in db_ucs_for_origin:
-            # Adicionar ao cache se não estiver lá
             if db_uc.uc_id not in uc_model_cache:
                 uc_model_cache[db_uc.uc_id] = db_uc
 
-            # Montar os dados base da UC
             uc_response_base_data = schemas.FinalKnowledgeUnitResponse.model_validate(db_uc).model_dump()
 
             current_uc_relationships_as_source: List[schemas.UCRelationshipDetail] = []
@@ -591,25 +587,28 @@ def list_detailed_knowledge_unit_origins(
             for db_rel_s in db_rels_as_source:
                 related_text = None
                 related_bloom_level = None
+                related_difficulty_score = None
 
                 target_uc_model = uc_model_cache.get(db_rel_s.target)
-                if not target_uc_model:  # Se não está no cache, busca no DB
+                if not target_uc_model:
                     target_uc_model = db.query(models.FinalKnowledgeUnit).filter_by(
                         pipeline_run_id=run_id, uc_id=db_rel_s.target
                     ).first()
                     if target_uc_model:
-                        uc_model_cache[db_rel_s.target] = target_uc_model  # Adiciona ao cache
+                        uc_model_cache[db_rel_s.target] = target_uc_model
 
                 if target_uc_model:
                     related_text = target_uc_model.uc_text
                     related_bloom_level = target_uc_model.bloom_level
+                    related_difficulty_score = target_uc_model.difficulty_score
 
                 current_uc_relationships_as_source.append(
                     schemas.UCRelationshipDetail(
                         relationship_type=db_rel_s.type,
                         related_uc_id=db_rel_s.target,
                         related_uc_text=related_text,
-                        related_uc_bloom_level=related_bloom_level
+                        related_uc_bloom_level=related_bloom_level,
+                        related_uc_difficulty_score=related_difficulty_score
                     )
                 )
 
@@ -622,37 +621,38 @@ def list_detailed_knowledge_unit_origins(
             for db_rel_t in db_rels_as_target:
                 related_text = None
                 related_bloom_level = None
+                related_difficulty_score = None
 
                 source_uc_model = uc_model_cache.get(db_rel_t.source)
-                if not source_uc_model:  # Se não está no cache, busca no DB
+                if not source_uc_model:
                     source_uc_model = db.query(models.FinalKnowledgeUnit).filter_by(
                         pipeline_run_id=run_id, uc_id=db_rel_t.source
                     ).first()
                     if source_uc_model:
-                        uc_model_cache[db_rel_t.source] = source_uc_model  # Adiciona ao cache
+                        uc_model_cache[db_rel_t.source] = source_uc_model
 
                 if source_uc_model:
                     related_text = source_uc_model.uc_text
                     related_bloom_level = source_uc_model.bloom_level
+                    related_difficulty_score = source_uc_model.difficulty_score
 
                 current_uc_relationships_as_target.append(
                     schemas.UCRelationshipDetail(
                         relationship_type=db_rel_t.type,
                         related_uc_id=db_rel_t.source,
                         related_uc_text=related_text,
-                        related_uc_bloom_level=related_bloom_level
+                        related_uc_bloom_level=related_bloom_level,
+                        related_uc_difficulty_score=related_difficulty_score
                     )
                 )
 
-            # Criar o objeto UCWithRelationshipsResponse completo
             uc_with_rels_obj = schemas.UCWithRelationshipsResponse(
-                **uc_response_base_data,  # Campos da FinalKnowledgeUnitResponse
+                **uc_response_base_data,
                 relationships_as_source=current_uc_relationships_as_source,
                 relationships_as_target=current_uc_relationships_as_target
             )
             origin_response_data["knowledge_units"].append(uc_with_rels_obj)
 
-        # Criar o objeto OriginWithUCsAndRelationshipsResponse final
         final_origin_response_obj = schemas.OriginWithUCsAndRelationshipsResponse(**origin_response_data)
         response_list.append(final_origin_response_obj)
 
