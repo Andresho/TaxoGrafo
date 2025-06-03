@@ -51,11 +51,13 @@ def list_final_knowledge_units(
         origin_id: Optional[str] = Query(None, description="Filter by origin ID"),
         min_difficulty: Optional[int] = Query(None, ge=0, le=100),
         max_difficulty: Optional[int] = Query(None, ge=0, le=100),
+        order_by_difficulty: Optional[str] = Query(None, description="Order by difficulty score ('asc' or 'desc')"),
+        ignore_null_difficulty: Optional[bool] = Query(False, description="Ignore knowledge units with null difficulty score"),
         db: Session = Depends(get_db)
 ):
     """
     Retrieves a list of final knowledge units (UCs) for a specific pipeline run,
-    with optional filtering and pagination.
+    with optional filtering, pagination, and ordering.
     """
     # Verifica se a run existe
     run = crud.pipeline_run.get_run(db, run_id=run_id)
@@ -72,10 +74,17 @@ def list_final_knowledge_units(
         query = query.filter(models.FinalKnowledgeUnit.difficulty_score >= min_difficulty)
     if max_difficulty is not None:
         query = query.filter(models.FinalKnowledgeUnit.difficulty_score <= max_difficulty)
+    if ignore_null_difficulty:
+        query = query.filter(models.FinalKnowledgeUnit.difficulty_score.isnot(None))
+
+    if order_by_difficulty:
+        if order_by_difficulty.lower() == "asc":
+            query = query.order_by(models.FinalKnowledgeUnit.difficulty_score.asc())
+        elif order_by_difficulty.lower() == "desc":
+            query = query.order_by(models.FinalKnowledgeUnit.difficulty_score.desc())
 
     units = query.offset(skip).limit(limit).all()
     return units
-
 
 @router.get(
     "/runs/{run_id}/knowledge-units/{uc_id}",
