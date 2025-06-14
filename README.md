@@ -70,3 +70,7 @@ Para processar um novo documento:
 3.  Use o endpoint `POST /api/v1/resources/upload` para enviar seu arquivo PDF ou TXT e copie o `resource_id` retornado.
 4.  Use o endpoint `POST /pipeline/{run_id}/init` para iniciar uma nova execução, fornecendo um `run_id` de sua escolha e o `resource_id` obtido.
 5.  Acompanhe o progresso na interface do Airflow: `http://localhost:8080`.
+
+## Licença
+
+Este projeto está licenciado sob a Licença MIT. Veja o arquivo [`LICENSE.md`](./LICENSE.md) para mais detalhes.
