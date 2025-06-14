@@ -1,6 +1,5 @@
 FROM apache/airflow:2.8.4-python3.10
 
-# Argumento para definir o usuário Airflow (use seu UID local)
 ARG AIRFLOW_UID=50000
 ARG AIRFLOW_GID=0
 
@@ -11,7 +10,6 @@ ENV PATH="${AIRFLOW_HOME}/.local/bin:${PATH}"
 
 COPY --chown=${AIRFLOW_UID}:${AIRFLOW_GID} ./airflow-pipeline/requirements.txt /requirements.txt
 
-# Mude para o usuário airflow ANTES de instalar com --user
 USER $AIRFLOW_UID
 
 RUN python -m pip install --no-cache-dir --user -r /requirements.txt

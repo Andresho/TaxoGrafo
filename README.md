@@ -2,6 +2,8 @@
 
 Este repositório contém o software artefato desenvolvido para o Trabalho de Conclusão de Curso (TCC) em Ciência da Computação, intitulado **"Proposta de Construção de Grafos de Conhecimento Educacional com Modelos de Linguagem Orientados pela Taxonomia de Bloom"**.
 
+> Para uma análise teórica aprofundada da proposta, metodologia e resultados, por favor, consulte o documento completo do TCC, disponível neste repositório: [`documentos/TCC_II_André_Hoffmann.pdf`](./documentos/TCC_II_André_Hoffmann.pdf).
+
 O objetivo deste projeto é fornecer um framework funcional para automatizar a criação de grafos de conhecimento a partir de fontes de texto não estruturadas. O sistema foi projetado para extrair conceitos, estruturá-los hierarquicamente e enriquecê-los com metadados pedagógicos.
 
 Para fins de validação e replicação, os dados e artefatos da execução principal utilizada como estudo de caso no TCC (identificada como `run_id="tcc_run"`) estão incluídos. A seção "Guia de Replicação" detalha como carregar estes dados.
@@ -21,7 +23,7 @@ A arquitetura é baseada em serviços conteinerizados e gerenciados via **Docker
 -   **Banco de Dados (PostgreSQL):** Persiste todos os metadados, artefatos intermediários e o grafo final.
 -   **Processador de Grafos (GraphRAG):** Serviço isolado para a análise de NLP.
 
-![Diagrama de Arquitetura](article/images/diagrama_componentes_alto_nivel.png)
+![Diagrama de Arquitetura](documentos/images/diagrama.png)
 
 ## Estado Atual e Limitações
 

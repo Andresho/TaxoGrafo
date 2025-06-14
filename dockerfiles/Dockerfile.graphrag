@@ -7,11 +7,8 @@ RUN apt-get update && apt-get install -y git rsync \
 
 WORKDIR /graphrag
 
-# 1. Deixe o GraphRAG criar toda a sua estrutura padrão primeiro, incluindo um settings.yaml e .env template.
 RUN graphrag init --root /graphrag_config --force
 
-# 2. Agora, copie SEUS arquivos .env e settings.yaml, sobrescrevendo os templates gerados pelo init.
-#    Os prompts/ e qualquer outra estrutura criada pelo init permanecerão.
 COPY ./.env /graphrag_config/.env
 COPY ./settings.yaml /graphrag_config/settings.yaml
 

@@ -349,42 +349,42 @@ def get_uc_neighborhood(
 
 
 
-@router.get(
-    "/runs/{run_id}/origins-hierarchy/roots",
-    response_model=List[schemas.KnowledgeUnitOriginResponse],  # Usando o schema que já existe para listar origens
-    summary="List Root-Level Knowledge Unit Origins"
-)
-def list_root_origins(
-        run_id: str,
-        skip: int = Query(0, ge=0),
-        limit: int = Query(100, ge=1, le=1000),
-        origin_type: Optional[str] = Query(None, description="Filter root origins by type (e.g., entity, community)"),
-        db: Session = Depends(get_db)
-):
-    """
-    Retrieves a list of root-level knowledge unit origins (those without a parent)
-    for a specific pipeline run.
-    """
-    run = crud.pipeline_run.get_run(db, run_id=run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found")
+# @router.get(
+#     "/runs/{run_id}/origins-hierarchy/roots",
+#     response_model=List[schemas.KnowledgeUnitOriginResponse],  # Usando o schema que já existe para listar origens
+#     summary="List Root-Level Knowledge Unit Origins"
+# )
+# def list_root_origins(
+#         run_id: str,
+#         skip: int = Query(0, ge=0),
+#         limit: int = Query(100, ge=1, le=1000),
+#         origin_type: Optional[str] = Query(None, description="Filter root origins by type (e.g., entity, community)"),
+#         db: Session = Depends(get_db)
+# ):
+#     """
+#     Retrieves a list of root-level knowledge unit origins (those without a parent)
+#     for a specific pipeline run.
+#     """
+#     run = crud.pipeline_run.get_run(db, run_id=run_id)
+#     if not run:
+#         raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found")
 
-    query = db.query(models.KnowledgeUnitOrigin).filter(
-        models.KnowledgeUnitOrigin.pipeline_run_id == run_id,
-        # Verifica se parent_community_id_of_origin é NULL ou uma string vazia,
-        # dependendo de como você armazena "sem pai".
-        # SQLAlchemy trata None como IS NULL. Se você usa string vazia, ajuste.
-        models.KnowledgeUnitOrigin.parent_community_id_of_origin == None
-    )
+#     query = db.query(models.KnowledgeUnitOrigin).filter(
+#         models.KnowledgeUnitOrigin.pipeline_run_id == run_id,
+#         # Verifica se parent_community_id_of_origin é NULL ou uma string vazia,
+#         # dependendo de como você armazena "sem pai".
+#         # SQLAlchemy trata None como IS NULL. Se você usa string vazia, ajuste.
+#         models.KnowledgeUnitOrigin.parent_community_id_of_origin == None
+#     )
 
-    if origin_type:
-        query = query.filter(models.KnowledgeUnitOrigin.origin_type == origin_type)
+#     if origin_type:
+#         query = query.filter(models.KnowledgeUnitOrigin.origin_type == origin_type)
 
-    # Adicionar ordenação se desejar, ex: por title
-    query = query.order_by(models.KnowledgeUnitOrigin.title)
+#     # Adicionar ordenação se desejar, ex: por title
+#     query = query.order_by(models.KnowledgeUnitOrigin.title)
 
-    roots = query.offset(skip).limit(limit).all()
-    return roots
+#     roots = query.offset(skip).limit(limit).all()
+#     return roots
 
 
 @router.get(
@@ -503,6 +503,10 @@ def get_origins_hierarchy_tree(
     """
     Retrieves a sub-tree of the knowledge unit origins hierarchy,
     starting from a specific origin_id and descending N levels.
+    
+    Warning: This method can be computationally intensive and slow,
+    especially for large graphs or nodes with many origins.
+    It is recommended to use this method only for verification and debugging purposes.
     """
     run = crud.pipeline_run.get_run(db, run_id=run_id)
     if not run:
